@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Set
 import argparse
 import pytz
+import pandas as pd
 
 TW_TZ = pytz.timezone("Asia/Taipei")
 UTC_OFFSET_SECS = 8 * 3600  # Taiwan is UTC+8
@@ -17,6 +18,25 @@ UTC_OFFSET_SECS = 8 * 3600  # Taiwan is UTC+8
 def ts_to_taiwan(ts_ms: int) -> int:
     """Convert Binance UTC ms timestamp → Taiwan time Unix seconds."""
     return int(ts_ms / 1000) + UTC_OFFSET_SECS
+
+
+def resample_klines(data: list, rule: str) -> list:
+    """Resample 日K data to 週K or 月K."""
+    if not data:
+        return []
+    df = pd.DataFrame(data)
+    df['time'] = pd.to_datetime(df['time'], unit='s')
+    df.set_index('time', inplace=True)
+    resampled = df.resample(rule).agg({
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last',
+        'volume': 'sum',
+    }).dropna()
+    resampled['time'] = resampled.index.view('int64') // 10**9
+    return resampled.to_dict('records')
+
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -75,7 +95,7 @@ def generate_mock_klines(num_bars: int = 100) -> list:
 # ========================================
 
 @app.get("/api/klines")
-async def get_klines(symbol: str = "BTCUSDT", interval: str = "1h", limit: int = 100, market: str = "CRYPTO"):
+async def get_klines(symbol: str = "BTCUSDT", interval: str = "1h", limit: int = 500, market: str = "CRYPTO"):
     """Fetch real K-line data for CRYPTO/TWSE/US markets."""
     # CRYPTO → Binance
     if market == "CRYPTO":
@@ -83,7 +103,7 @@ async def get_klines(symbol: str = "BTCUSDT", interval: str = "1h", limit: int =
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(
                     "https://api.binance.com/api/v3/klines",
-                    params={"symbol": symbol, "interval": "1h", "limit": limit}
+                    params={"symbol": symbol, "interval": interval, "limit": limit}
                 )
                 resp.raise_for_status()
                 raw = resp.json()
@@ -98,12 +118,12 @@ async def get_klines(symbol: str = "BTCUSDT", interval: str = "1h", limit: int =
                     }
                     for k in raw
                 ]
-                return { "symbol": symbol, "interval": "1h", "data": data }
+                return { "symbol": symbol, "interval": interval, "data": data }
         except Exception:
             data = generate_mock_klines(num_bars=limit)
             from fastapi import Response
             return Response(
-                content=json.dumps({ "symbol": symbol, "interval": "1h", "data": data }),
+                content=json.dumps({ "symbol": symbol, "interval": interval, "data": data }),
                 media_type="application/json",
                 headers={"X-Data-Source": "mock"}
             )
@@ -117,7 +137,7 @@ async def get_klines(symbol: str = "BTCUSDT", interval: str = "1h", limit: int =
                     params={
                         "dataset": "TaiwanStockPrice",
                         "data_id": symbol,
-                        "start_date": "2026-03-01",
+                        "start_date": "2025-01-01",
                         "end_date": "2026-04-20",
                     }
                 )
@@ -128,7 +148,8 @@ async def get_klines(symbol: str = "BTCUSDT", interval: str = "1h", limit: int =
                     raise ValueError("No TWSE data")
                 # Sort by date ascending
                 sorted_data = sorted(raw_data, key=lambda x: x.get("date", ""))
-                data = [
+                # Convert all to daily klines
+                full_data = [
                     {
                         "time": int(datetime.strptime(d["date"], "%Y-%m-%d").timestamp()),
                         "open": float(d.get("open", 0) or 0),
@@ -137,14 +158,22 @@ async def get_klines(symbol: str = "BTCUSDT", interval: str = "1h", limit: int =
                         "close": float(d.get("close", 0) or 0),
                         "volume": float(d.get("Trading_Volume", 0) or 0),
                     }
-                    for d in sorted_data[-limit:]
+                    for d in sorted_data
                 ]
-                return { "symbol": symbol, "interval": "1d", "data": data }
+                if interval == "1d":
+                    data = full_data[-limit:]
+                elif interval == "1w":
+                    data = resample_klines(full_data, 'W')
+                elif interval == "1mo":
+                    data = resample_klines(full_data, 'ME')
+                else:
+                    data = full_data[-limit:]
+                return { "symbol": symbol, "interval": interval, "data": data }
         except Exception:
             data = generate_mock_klines(num_bars=limit)
             from fastapi import Response
             return Response(
-                content=json.dumps({ "symbol": symbol, "interval": "1d", "data": data }),
+                content=json.dumps({ "symbol": symbol, "interval": interval, "data": data }),
                 media_type="application/json",
                 headers={"X-Data-Source": "mock"}
             )
@@ -154,27 +183,35 @@ async def get_klines(symbol: str = "BTCUSDT", interval: str = "1h", limit: int =
         try:
             import yfinance as yf
             ticker = yf.Ticker(symbol)
-            df = ticker.history(period="90d")
+            df = ticker.history(period="2y")
             if df.empty:
                 raise ValueError("No US data")
-            df2 = df.reset_index()
-            data = [
+            df = df.reset_index()
+            daily_data = [
                 {
-                    "time": int(df2.iloc[i]["Date"].timestamp()),
-                    "open": float(df2.iloc[i]["Open"]),
-                    "high": float(df2.iloc[i]["High"]),
-                    "low": float(df2.iloc[i]["Low"]),
-                    "close": float(df2.iloc[i]["Close"]),
-                    "volume": float(df2.iloc[i]["Volume"]),
+                    "time": int(df.iloc[i]["Date"].timestamp()),
+                    "open": float(df.iloc[i]["Open"]),
+                    "high": float(df.iloc[i]["High"]),
+                    "low": float(df.iloc[i]["Low"]),
+                    "close": float(df.iloc[i]["Close"]),
+                    "volume": float(df.iloc[i]["Volume"]),
                 }
-                for i in range(min(limit, len(df2)))
+                for i in range(len(df))
             ]
-            return { "symbol": symbol, "interval": "1d", "data": data }
+            if interval == "1d":
+                data = daily_data[-limit:]
+            elif interval == "1w":
+                data = resample_klines(daily_data, 'W')
+            elif interval == "1mo":
+                data = resample_klines(daily_data, 'ME')
+            else:
+                data = daily_data[-limit:]
+            return { "symbol": symbol, "interval": interval, "data": data }
         except Exception:
             data = generate_mock_klines(num_bars=limit)
             from fastapi import Response
             return Response(
-                content=json.dumps({ "symbol": symbol, "interval": "1d", "data": data }),
+                content=json.dumps({ "symbol": symbol, "interval": interval, "data": data }),
                 media_type="application/json",
                 headers={"X-Data-Source": "mock"}
             )
