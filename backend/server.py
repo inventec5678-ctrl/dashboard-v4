@@ -76,53 +76,112 @@ def generate_mock_klines(num_bars: int = 100) -> list:
 
 @app.get("/api/klines")
 async def get_klines(symbol: str = "BTCUSDT", interval: str = "1h", limit: int = 100, market: str = "CRYPTO"):
-    """Fetch real K-line data from Binance REST API."""
-    # TWSE/US 目前沒有真實 API，先用 mock data
-    if market != "CRYPTO":
-        data = generate_mock_klines(num_bars=limit)
-        return { "symbol": symbol, "interval": interval, "data": data }
-
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                "https://api.binance.com/api/v3/klines",
-                params={"symbol": "BTCUSDT", "interval": "1h", "limit": limit}
+    """Fetch real K-line data for CRYPTO/TWSE/US markets."""
+    # CRYPTO → Binance
+    if market == "CRYPTO":
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    "https://api.binance.com/api/v3/klines",
+                    params={"symbol": symbol, "interval": "1h", "limit": limit}
+                )
+                resp.raise_for_status()
+                raw = resp.json()
+                data = [
+                    {
+                        "time": ts_to_taiwan(k[0]),
+                        "open": float(k[1]),
+                        "high": float(k[2]),
+                        "low": float(k[3]),
+                        "close": float(k[4]),
+                        "volume": float(k[7]),
+                    }
+                    for k in raw
+                ]
+                return { "symbol": symbol, "interval": "1h", "data": data }
+        except Exception:
+            data = generate_mock_klines(num_bars=limit)
+            from fastapi import Response
+            return Response(
+                content=json.dumps({ "symbol": symbol, "interval": "1h", "data": data }),
+                media_type="application/json",
+                headers={"X-Data-Source": "mock"}
             )
-            resp.raise_for_status()
-            raw = resp.json()
 
+    # TWSE → FinMind API
+    elif market == "TWSE":
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    "https://api.finmindtrade.com/api/v4/data",
+                    params={
+                        "dataset": "TaiwanStockPrice",
+                        "data_id": symbol,
+                        "start_date": "2026-03-01",
+                        "end_date": "2026-04-20",
+                    }
+                )
+                resp.raise_for_status()
+                raw = resp.json()
+                raw_data = raw.get("data", [])
+                if not raw_data:
+                    raise ValueError("No TWSE data")
+                # Sort by date ascending
+                sorted_data = sorted(raw_data, key=lambda x: x.get("date", ""))
+                data = [
+                    {
+                        "time": int(datetime.strptime(d["date"], "%Y-%m-%d").timestamp()),
+                        "open": float(d.get("open", 0) or 0),
+                        "high": float(d.get("max", 0) or 0),
+                        "low": float(d.get("min", 0) or 0),
+                        "close": float(d.get("close", 0) or 0),
+                        "volume": float(d.get("Trading_Volume", 0) or 0),
+                    }
+                    for d in sorted_data[-limit:]
+                ]
+                return { "symbol": symbol, "interval": "1d", "data": data }
+        except Exception:
+            data = generate_mock_klines(num_bars=limit)
+            from fastapi import Response
+            return Response(
+                content=json.dumps({ "symbol": symbol, "interval": "1d", "data": data }),
+                media_type="application/json",
+                headers={"X-Data-Source": "mock"}
+            )
+
+    # US → yfinance
+    elif market == "US":
+        try:
+            import yfinance as yf
+            ticker = yf.Ticker(symbol)
+            df = ticker.history(period="90d")
+            if df.empty:
+                raise ValueError("No US data")
+            df2 = df.reset_index()
             data = [
                 {
-                    "time": ts_to_taiwan(k[0]),  # Binance UTC ms → Taiwan time Unix sec
-                    "open": float(k[1]),
-                    "high": float(k[2]),
-                    "low": float(k[3]),
-                    "close": float(k[4]),
-                    "volume": float(k[7]),
+                    "time": int(df2.iloc[i]["Date"].timestamp()),
+                    "open": float(df2.iloc[i]["Open"]),
+                    "high": float(df2.iloc[i]["High"]),
+                    "low": float(df2.iloc[i]["Low"]),
+                    "close": float(df2.iloc[i]["Close"]),
+                    "volume": float(df2.iloc[i]["Volume"]),
                 }
-                for k in raw
+                for i in range(min(limit, len(df2)))
             ]
+            return { "symbol": symbol, "interval": "1d", "data": data }
+        except Exception:
+            data = generate_mock_klines(num_bars=limit)
+            from fastapi import Response
+            return Response(
+                content=json.dumps({ "symbol": symbol, "interval": "1d", "data": data }),
+                media_type="application/json",
+                headers={"X-Data-Source": "mock"}
+            )
 
-            return {
-                "symbol": "BTCUSDT",
-                "interval": "1h",
-                "data": data,
-            }
-
-    except Exception:
-        # Fallback to mock on any error
-        data = generate_mock_klines(num_bars=limit)
-        from fastapi import Response
-        response = Response(
-            content=json.dumps({
-                "symbol": "BTCUSDT",
-                "interval": "1h",
-                "data": data,
-            }),
-            media_type="application/json",
-            headers={"X-Data-Source": "mock"}
-        )
-        return response
+    # Fallback
+    data = generate_mock_klines(num_bars=limit)
+    return { "symbol": symbol, "interval": interval, "data": data }
 
 
 @app.get("/health")
