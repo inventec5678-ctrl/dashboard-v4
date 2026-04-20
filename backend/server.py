@@ -34,10 +34,8 @@ def resample_klines(data: list, rule: str) -> list:
         'close': 'last',
         'volume': 'sum',
     }).dropna()
-    resampled['time'] = resampled.index.view('int64') // 10**9
+    resampled['time'] = resampled.index.to_numpy().astype('int64').tolist()
     return resampled.to_dict('records')
-
-
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -138,9 +136,15 @@ async def get_klines(
     # CRYPTO → Binance
     if market == "CRYPTO":
         try:
-            if interval == "1d":
-                # Use pagination to get multi-year history
-                raw = await get_binance_long_history(symbol, "1d", years=years)
+            if interval in ("1d", "1w", "1mo"):
+                # Use daily klines for 1d, and resample for 1w/1mo
+                daily = await get_binance_long_history(symbol, "1d", years=years)
+                if interval == "1d":
+                    raw = daily
+                elif interval == "1w":
+                    raw = daily
+                elif interval == "1mo":
+                    raw = daily
             else:
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     resp = await client.get(
@@ -160,8 +164,14 @@ async def get_klines(
                 }
                 for k in raw
             ]
+            if interval == "1w":
+                data = resample_klines(data, 'W')
+            elif interval == "1mo":
+                data = resample_klines(data, 'ME')
             return { "symbol": symbol, "interval": interval, "data": data }
-        except Exception:
+        except Exception as e:
+            import sys, traceback
+            traceback.print_exc(file=sys.stderr)
             data = generate_mock_klines(num_bars=limit)
             from fastapi import Response
             return Response(
@@ -213,7 +223,9 @@ async def get_klines(
                 else:
                     data = full_data[-limit:]
                 return { "symbol": symbol, "interval": interval, "data": data }
-        except Exception:
+        except Exception as e:
+            import sys, traceback
+            traceback.print_exc(file=sys.stderr)
             data = generate_mock_klines(num_bars=limit)
             from fastapi import Response
             return Response(
@@ -251,7 +263,9 @@ async def get_klines(
             else:
                 data = daily_data[-limit:]
             return { "symbol": symbol, "interval": interval, "data": data }
-        except Exception:
+        except Exception as e:
+            import sys, traceback
+            traceback.print_exc(file=sys.stderr)
             data = generate_mock_klines(num_bars=limit)
             from fastapi import Response
             return Response(
