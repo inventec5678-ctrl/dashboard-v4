@@ -1,5 +1,5 @@
 import { createSignal, createEffect, onMount, onCleanup, Show, For } from 'solid-js';
-import { createChart, ColorType, CrosshairMode, IChartApi, ISeriesApi, LineWidth, Time } from 'lightweight-charts';
+import { createChart, ColorType, CrosshairMode, IChartApi, ISeriesApi, LineWidth, Time, VerticalLine } from 'lightweight-charts';
 
 interface MACDData { time: Time; macd: number; signal: number; histogram: number; }
 
@@ -110,12 +110,14 @@ function App() {
   let rsiContainerRef: HTMLDivElement | undefined;
   let volumeContainerRef: HTMLDivElement | undefined;
   let macdContainerRef: HTMLDivElement | undefined;
+  let obContainerRef: HTMLDivElement | undefined;
 
   let chart: IChartApi | null = null;
   let smaChart: IChartApi | null = null;
   let rsiChart: IChartApi | null = null;
   let volumeChart: IChartApi | null = null;
   let macdChart: IChartApi | null = null;
+  let obChart: IChartApi | null = null;
   let candlestickSeries: ISeriesApi<'Candlestick'> | null = null;
   let smaSeries: ISeriesApi<'Line'> | null = null;
   let rsiSeries: ISeriesApi<'Line'> | null = null;
@@ -123,8 +125,10 @@ function App() {
   let macdSeries: ISeriesApi<'Line'> | null = null;
   let macdSignalSeries: ISeriesApi<'Line'> | null = null;
   let macdHistogramSeries: ISeriesApi<'Histogram'> | null = null;
+  let volumeAnomalySeries: ISeriesApi<'Line'> | null = null;
 
   let ws: WebSocket | null = null;
+  let obIntervalId: ReturnType<typeof setInterval> | null = null;
   let lastKlineTime: number = 0;
 
   const [loading, setLoading] = createSignal(true);
@@ -136,6 +140,10 @@ function App() {
   const [high24h, setHigh24h] = createSignal(0);
   const [low24h, setLow24h] = createSignal(0);
   const [volume, setVolume] = createSignal(0);
+
+  // Order Book Anomaly state
+  const [obAnomalies, setObAnomalies] = createSignal<any>(null);
+  const [obRefreshKey, setObRefreshKey] = createSignal(0);
 
   // Market & Symbol selector
   const [market, setMarket] = createSignal<'CRYPTO' | 'TWSE' | 'US'>('CRYPTO');
@@ -287,6 +295,15 @@ function App() {
       macdSignalSeries = macdChart.addLineSeries({ color: '#FF5B79', lineWidth: 1 as LineWidth, title: 'Signal' });
     }
 
+    // Order Book depth chart
+    if (obContainerRef) {
+      obChart = createChart(obContainerRef, {
+        ...baseChartOptions(120),
+        width: obContainerRef.clientWidth,
+        rightPriceScale: { borderColor: 'rgba(255, 255, 255, 0.06)', scaleMargins: { top: 0.1, bottom: 0.1 } },
+      });
+    }
+
     // Responsive resize
     const makeResizeHandler = (c: HTMLDivElement, api: IChartApi | null) => () => {
       if (api && c) {
@@ -299,12 +316,14 @@ function App() {
     const roRSI = new ResizeObserver(makeResizeHandler(rsiContainerRef, rsiChart));
     const roVolume = new ResizeObserver(makeResizeHandler(volumeContainerRef!, volumeChart));
     const roMACD = new ResizeObserver(makeResizeHandler(macdContainerRef!, macdChart));
+    const roOB = new ResizeObserver(makeResizeHandler(obContainerRef!, obChart));
 
     roMain.observe(chartContainerRef);
     roSMA.observe(smaContainerRef);
     roRSI.observe(rsiContainerRef);
     if (volumeContainerRef) roVolume.observe(volumeContainerRef);
     if (macdContainerRef) roMACD.observe(macdContainerRef);
+    if (obContainerRef) roOB.observe(obContainerRef);
 
     onCleanup(() => {
       roMain.disconnect();
@@ -312,16 +331,86 @@ function App() {
       roRSI.disconnect();
       roVolume.disconnect();
       roMACD.disconnect();
+      roOB.disconnect();
       ws?.close();
+      if (obIntervalId) clearInterval(obIntervalId);
       chart?.remove();
       smaChart?.remove();
       rsiChart?.remove();
       volumeChart?.remove();
       macdChart?.remove();
+      obChart?.remove();
     });
 
     loadKlines();
+    refreshObAnomalies();
+    obIntervalId = setInterval(refreshObAnomalies, 5000);
   });
+
+  async function refreshObAnomalies() {
+    try {
+      const obResp = await fetch(`/api/orderbook_anomaly?symbol=${selectedSymbol()}`);
+      if (obResp.ok) {
+        const ob = await obResp.json();
+        setObAnomalies(ob);
+
+        if (obChart) {
+          // Clear existing series
+          obChart.remove();
+
+          // Rebuild chart
+          obChart = createChart(obContainerRef!, {
+            ...baseChartOptions(120),
+            width: obContainerRef!.clientWidth,
+            rightPriceScale: { borderColor: 'rgba(255, 255, 255, 0.06)', scaleMargins: { top: 0.1, bottom: 0.1 } },
+          });
+
+          if (ob.bids && ob.asks) {
+            const bids = ob.bids.map((b: any) => ({ price: parseFloat(b[0]), volume: parseFloat(b[1]) }));
+            const asks = ob.asks.map((a: any) => ({ price: parseFloat(a[0]), volume: parseFloat(a[1]) }));
+
+            const bidSeries = obChart.addHistogramSeries({
+              color: 'rgba(0, 217, 165, 0.5)',
+              priceFormat: { type: 'price', precision: 2 },
+              priceScaleId: 'bid',
+            });
+            bidSeries.setData(bids.map(b => ({
+              time: b.price as Time,
+              value: b.volume,
+              color: 'rgba(0, 217, 165, 0.5)',
+            })));
+
+            const askSeries = obChart.addHistogramSeries({
+              color: 'rgba(255, 91, 121, 0.5)',
+              priceFormat: { type: 'price', precision: 2 },
+              priceScaleId: 'ask',
+            });
+            askSeries.setData(asks.map(a => ({
+              time: a.price as Time,
+              value: a.volume,
+              color: 'rgba(255, 91, 121, 0.5)',
+            })));
+
+            obChart.priceScale('bid').applyOptions({ scaleMargins: { top: 0.1, bottom: 0.1 } });
+            obChart.priceScale('ask').applyOptions({ scaleMargins: { top: 0.1, bottom: 0.1 } });
+
+            if (ob.top_anomalies) {
+              for (const ta of ob.top_anomalies) {
+                obChart.addVerticalLine({
+                  time: ta.price as Time,
+                  color: 'rgba(255, 91, 121, 0.9)',
+                  lineWidth: 1 as LineWidth,
+                  lineStyle: 0,
+                  axisLabelVisible: true,
+                });
+              }
+            }
+            obChart.timeScale().fitContent();
+          }
+        }
+      }
+    } catch (_e) { /* silently skip */ }
+  }
 
   function connectWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -421,6 +510,78 @@ function App() {
           color: d.histogram >= 0 ? 'rgba(0, 217, 165, 0.5)' : 'rgba(255, 91, 121, 0.5)',
         })));
       }
+
+      // Volume Anomaly markers (z-score > 2 on main chart)
+      try {
+        const vaResp = await fetch(`/api/anomaly_volume?symbol=${selectedSymbol()}&interval=${interval()}&market=${market()}&years=5`);
+        if (vaResp.ok) {
+          const vaData = await vaResp.json();
+          const anomalies = vaData.anomalies || [];
+          for (const a of anomalies) {
+            if (chart) {
+              chart.addVerticalLine({
+                time: a.time as Time,
+                color: 'rgba(255, 91, 121, 0.8)',
+                lineWidth: 2 as LineWidth,
+                lineStyle: 0,
+                axisLabelVisible: false,
+              });
+            }
+          }
+        }
+      } catch (_e) { /* silently skip */ }
+
+      // Order Book anomaly fetch + chart
+      try {
+        const obResp = await fetch(`/api/orderbook_anomaly?symbol=${selectedSymbol()}`);
+        if (obResp.ok) {
+          const ob = await obResp.json();
+          setObAnomalies(ob);
+
+          if (obChart && ob.bids && ob.asks) {
+            const bids = ob.bids.map((b: string[]) => ({ price: parseFloat(b[0]), volume: parseFloat(b[1]) }));
+            const asks = ob.asks.map((a: string[]) => ({ price: parseFloat(a[0]), volume: parseFloat(a[1]) }));
+
+            const maxVol = Math.max(...bids.map(b => b.volume), ...asks.map(a => a.volume), 1);
+
+            obChart.addHistogramSeries({
+              color: 'rgba(0, 217, 165, 0.5)',
+              priceFormat: { type: 'price', precision: 2 },
+              priceScaleId: 'bid',
+            }).setData(bids.map(b => ({
+              time: b.price as Time,
+              value: b.volume,
+              color: 'rgba(0, 217, 165, 0.5)',
+            })));
+
+            obChart.addHistogramSeries({
+              color: 'rgba(255, 91, 121, 0.5)',
+              priceFormat: { type: 'price', precision: 2 },
+              priceScaleId: 'ask',
+            }).setData(asks.map(a => ({
+              time: a.price as Time,
+              value: a.volume,
+              color: 'rgba(255, 91, 121, 0.5)',
+            })));
+
+            // Mark anomaly price levels with vertical lines
+            if (ob.top_anomalies) {
+              for (const ta of ob.top_anomalies) {
+                obChart.addVerticalLine({
+                  time: ta.price as Time,
+                  color: 'rgba(255, 91, 121, 0.9)',
+                  lineWidth: 1 as LineWidth,
+                  lineStyle: 0,
+                  axisLabelVisible: true,
+                });
+              }
+            }
+            obChart.timeScale().fitContent();
+          }
+        }
+      } catch (_e) { /* silently skip */ }
+
+      // Stats
 
       // Stats
       const last = data.data[data.data.length - 1];
@@ -666,6 +827,40 @@ function App() {
           MACD (12, 26, 9) — <span style="color:#3B82F6;">MACD</span> · <span style="color:#FF5B79;">Signal</span>
         </div>
         <div ref={macdContainerRef} style="height: 90px;" />
+      </div>
+
+      {/* Order Book Anomaly Panel */}
+      <div class="chart-wrapper glass-card">
+        <div style="padding: 8px 16px; font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-mono); display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+          <span>Order Book Anomaly</span>
+          <Show when={obAnomalies()}>
+            {(() => {
+              const ob = obAnomalies();
+              return <>
+                <span style="color: var(--accent-green);">Spread: <b>{ob.spread}</b> ({ob.spread_pct}%)</span>
+                <span style="color: var(--accent-blue);">Bid/Ask: <b>{ob.bid_ask_ratio}</b></span>
+                {ob.wall_detected && <span style="color: var(--accent-red); font-weight: 700;">⚠ WALL DETECTED</span>}
+              </>;
+            })()}
+          </Show>
+        </div>
+
+        {/* Bid/Ask depth bars */}
+        <div ref={obContainerRef} style="height: 120px; margin: 0 16px 8px;" />
+
+        {/* Top anomalies list */}
+        <Show when={obAnomalies() && obAnomalies().top_anomalies?.length > 0}>
+          <div style="padding: 0 16px 8px; display: flex; gap: 8px; flex-wrap: wrap;">
+            {(() => {
+              const ob = obAnomalies();
+              return ob.top_anomalies.map((a: any) => (
+                <span style={`font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; background: ${a.side === 'bid' ? 'rgba(0,217,165,0.15)' : 'rgba(255,91,121,0.15)'}; color: ${a.side === 'bid' ? 'var(--accent-green)' : 'var(--accent-red)'};`}>
+                  {a.price.toFixed(2)} · {a.volume.toFixed(0)}x · z:{a.z_score}
+                </span>
+              ));
+            })()}
+          </div>
+        </Show>
       </div>
 
       {/* Stats Bar */}

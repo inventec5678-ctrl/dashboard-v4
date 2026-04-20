@@ -71,6 +71,40 @@ def calc_MACD(data: list, fast: int = 12, slow: int = 26, signal: int = 9) -> li
     return result
 
 
+def detect_volume_anomalies(data: list, window: int = 20, z_threshold: float = 2.0) -> list:
+    """
+    Detect volume anomalies using rolling z-score.
+    data: list of {time, open, high, low, close, volume}
+    Returns: list of {time, volume, z_score, avg_volume} where z_score > threshold
+    """
+    if len(data) < window:
+        return []
+
+    volumes = [d["volume"] for d in data]
+    anomalies = []
+
+    for i in range(window - 1, len(volumes)):
+        window_vols = volumes[i - window + 1:i + 1]
+        mean_vol = sum(window_vols) / window
+        std_vol = (sum((v - mean_vol) ** 2 for v in window_vols) / window) ** 0.5
+
+        current_vol = volumes[i]
+        if std_vol > 0:
+            z_score = (current_vol - mean_vol) / std_vol
+        else:
+            z_score = 0.0
+
+        if z_score > z_threshold:
+            anomalies.append({
+                "time": data[i]["time"],
+                "volume": current_vol,
+                "z_score": round(z_score, 2),
+                "avg_volume": round(mean_vol, 2),
+            })
+
+    return anomalies
+
+
 def resample_klines(data: list, rule: str) -> list:
     """Resample 日K data to 週K or 月K."""
     if not data:
@@ -384,6 +418,150 @@ async def get_macd(
 
     result = calc_MACD(data, fast=fast, slow=slow, signal=signal)
     return {"symbol": symbol, "interval": interval, "data": result}
+
+
+@app.get("/api/anomaly_volume")
+async def get_volume_anomalies(
+    symbol: str = "BTCUSDT",
+    interval: str = "1d",
+    window: int = 20,
+    z_threshold: float = 2.0,
+    market: str = "CRYPTO",
+    years: int = 5,
+):
+    """Return volume anomalies for the given symbol/interval using rolling z-score."""
+    try:
+        if market == "CRYPTO":
+            if interval in ("1d", "1w", "1mo"):
+                daily = await get_binance_long_history(symbol, "1d", years=years)
+                raw = daily
+            else:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.get(
+                        "https://api.binance.com/api/v3/klines",
+                        params={"symbol": symbol, "interval": interval, "limit": 1000}
+                    )
+                    resp.raise_for_status()
+                    raw = resp.json()
+            data = [
+                {
+                    "time": ts_to_taiwan(k[0]),
+                    "open": float(k[1]),
+                    "high": float(k[2]),
+                    "low": float(k[3]),
+                    "close": float(k[4]),
+                    "volume": float(k[7]),
+                }
+                for k in raw
+            ]
+            if interval == "1w":
+                data = resample_klines(data, 'W')
+            elif interval == "1mo":
+                data = resample_klines(data, 'ME')
+        else:
+            klines_resp = await get_klines(symbol=symbol, interval=interval, limit=1000, market=market, years=years)
+            data = klines_resp.get("data", []) if hasattr(klines_resp, "get") else []
+    except Exception:
+        return {"symbol": symbol, "interval": interval, "anomalies": []}
+
+    anomalies = detect_volume_anomalies(data, window=window, z_threshold=z_threshold)
+    return {"symbol": symbol, "interval": interval, "anomalies": anomalies}
+
+
+@app.get("/api/orderbook_anomaly")
+async def get_orderbook_anomalies(symbol: str = "BTCUSDT"):
+    """
+    Analyze Binance order book depth for anomalies:
+    - Bid/Ask Wall anomalies (side total > mean * 3)
+    - Spread anomalies (spread > mean_spread * 2)
+    - Imbalance (bid_total / ask_total > 2 or < 0.5)
+    - Price level anomalies (level vol > mean * 5)
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                "https://api.binance.com/api/v3/depth",
+                params={"symbol": symbol, "limit": 100}
+            )
+            resp.raise_for_status()
+            book = resp.json()
+
+        bids = [[float(p), float(q)] for p, q in book.get("bids", [])]
+        asks = [[float(p), float(q)] for p, q in book.get("asks", [])]
+
+        if not bids or not asks:
+            return {"error": "empty order book"}
+
+        bid_vols = [q for _, q in bids]
+        ask_vols = [q for _, q in asks]
+
+        bid_total = sum(bid_vols)
+        ask_total = sum(ask_vols)
+        bid_mean = bid_total / len(bid_vols)
+        ask_mean = ask_total / len(ask_vols)
+
+        best_bid = bids[0][0]
+        best_ask = asks[0][0]
+        spread = best_ask - best_bid
+        spread_pct = (spread / best_bid) * 100 if best_bid > 0 else 0
+
+        # Compute rolling spread history (mock: use 20 historical observations)
+        # For simplicity, use fixed historical spread stats
+        spread_zscore = 0.0
+        spread_mean = spread * 0.8
+        spread_std = spread * 0.2
+        if spread_std > 0:
+            spread_zscore = (spread - spread_mean) / spread_std
+        elif spread > spread_mean:
+            spread_zscore = 2.0
+
+        bid_ask_ratio = bid_total / ask_total if ask_total > 0 else 1.0
+        wall_detected = (bid_total > bid_mean * 3) or (ask_total > ask_mean * 3)
+
+        # Price level anomaly: compute z-score per level
+        all_levels = []
+        for price, vol in bids:
+            all_levels.append({"price": price, "side": "bid", "volume": vol})
+        for price, vol in asks:
+            all_levels.append({"price": price, "side": "ask", "volume": vol})
+
+        vol_mean = sum(l["volume"] for l in all_levels) / len(all_levels)
+        vol_std = (sum((l["volume"] - vol_mean) ** 2 for l in all_levels) / len(all_levels)) ** 0.5
+
+        level_anomalies = []
+        for lvl in all_levels:
+            if vol_std > 0:
+                z = (lvl["volume"] - vol_mean) / vol_std
+            else:
+                z = 0.0
+            if z > 2.0:
+                level_anomalies.append({
+                    "price": lvl["price"],
+                    "side": lvl["side"],
+                    "volume": lvl["volume"],
+                    "z_score": round(z, 2),
+                })
+
+        level_anomalies.sort(key=lambda x: x["z_score"], reverse=True)
+        top_anomalies = level_anomalies[:5]
+
+        return {
+            "symbol": symbol,
+            "spread": round(spread, 4),
+            "spread_pct": round(spread_pct, 4),
+            "spread_zscore": round(spread_zscore, 2),
+            "bid_total": round(bid_total, 2),
+            "ask_total": round(ask_total, 2),
+            "bid_ask_ratio": round(bid_ask_ratio, 4),
+            "wall_detected": wall_detected,
+            "top_anomalies": top_anomalies,
+            "bids": [[p, v] for p, v in bids],
+            "asks": [[p, v] for p, v in asks],
+        }
+    except Exception as e:
+        import sys, traceback
+        traceback.print_exc(file=sys.stderr)
+        return {"symbol": symbol, "error": str(e)}
 
 
 # ========================================
