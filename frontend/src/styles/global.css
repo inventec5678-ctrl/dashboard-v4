@@ -451,6 +451,38 @@ body::before {
 }
 
 /* ========================================
+   Interval Tabs
+   ======================================== */
+.interval-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 8px 0;
+  flex-wrap: wrap;
+}
+
+.interval-btn {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  font-family: 'Inter', sans-serif;
+  font-size: 0.75rem;
+  background: rgba(255,255,255,0.05);
+  color: #8B95A8;
+  transition: all 0.2s;
+}
+
+.interval-btn:hover {
+  background: rgba(255,255,255,0.12);
+  color: #fff;
+}
+
+.interval-btn.active {
+  background: rgba(0, 217, 165, 0.15);
+  color: #00D9A5;
+}
+
+/* ========================================
    Symbol Select
    ======================================== */
 .symbol-select {

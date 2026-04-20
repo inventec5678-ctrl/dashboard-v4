@@ -583,7 +583,7 @@ function App() {
         </div>
         <div class="glass-card stat-item">
           <span class="stat-label">Interval</span>
-          <span class="stat-value mono">1H</span>
+          <span class="stat-value mono">{interval().toUpperCase()}</span>
         </div>
       </div>
     </div>
