@@ -5,9 +5,18 @@ Connects to real Binance API and WebSocket.
 import json
 import random
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Set
 import argparse
+import pytz
+
+TW_TZ = pytz.timezone("Asia/Taipei")
+UTC_OFFSET_SECS = 8 * 3600  # Taiwan is UTC+8
+
+
+def ts_to_taiwan(ts_ms: int) -> int:
+    """Convert Binance UTC ms timestamp → Taiwan time Unix seconds."""
+    return int(ts_ms / 1000) + UTC_OFFSET_SECS
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,15 +40,17 @@ app.add_middleware(
 # ========================================
 
 def generate_mock_klines(num_bars: int = 100) -> list:
-    """Generate realistic-looking mock BTC/USDT K-line data."""
-    base_time = datetime(2026, 2, 20, 0, 0, 0)
+    """Generate realistic-looking mock BTC/USDT K-line data in Taiwan time."""
+    # Base time interpreted as Taiwan local time, then converted to Unix timestamp
+    base_time_tw = TW_TZ.localize(datetime(2026, 2, 20, 0, 0, 0))
+    base_time_ts = int(base_time_tw.timestamp())  # Unix seconds in Taiwan time
     base_price = 64500.0
 
     klines = []
     current_price = base_price
 
     for i in range(num_bars):
-        timestamp = int((base_time + timedelta(hours=i)).timestamp())
+        timestamp = base_time_ts + i * 3600  # each bar is 1 hour in Taiwan time
         change_pct = random.uniform(-0.025, 0.030)
         open_price = current_price
         close_price = open_price * (1 + change_pct)
@@ -76,7 +87,7 @@ async def get_klines(symbol: str = "BTCUSDT", interval: str = "1h", limit: int =
 
             data = [
                 {
-                    "time": int(k[0] / 1000),   # ms → sec
+                    "time": ts_to_taiwan(k[0]),  # Binance UTC ms → Taiwan time Unix sec
                     "open": float(k[1]),
                     "high": float(k[2]),
                     "low": float(k[3]),
