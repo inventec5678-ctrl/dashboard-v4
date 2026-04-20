@@ -90,6 +90,19 @@ function App() {
   const [symbols, setSymbols] = createSignal<SymbolInfo[]>([]);
   const [selectedSymbol, setSelectedSymbol] = createSignal('BTCUSDT');
 
+  // Timeframe selector
+  const [interval, setInterval] = createSignal('1d');
+  const INTERVALS = [
+    { label: '1m', value: '1m' },
+    { label: '5m', value: '5m' },
+    { label: '15m', value: '15m' },
+    { label: '1H', value: '1h' },
+    { label: '4H', value: '4h' },
+    { label: '1D', value: '1d' },
+    { label: '1W', value: '1w' },
+    { label: '1M', value: '1mo' },
+  ] as const;
+
   // Price animation state
   const [priceFlashClass, setPriceFlashClass] = createSignal('');
 
@@ -284,7 +297,7 @@ function App() {
       setLoading(true);
       setError(null);
 
-      const url = `/api/klines?symbol=${selectedSymbol()}&interval=1h&limit=100&market=${market()}`;
+      const url = `/api/klines?symbol=${selectedSymbol()}&interval=${interval()}&limit=500&market=${market()}&years=5`;
       const response = await fetch(url);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
@@ -391,6 +404,23 @@ function App() {
         </For>
       </div>
 
+      {/* ====== Timeframe Tabs ====== */}
+      <div class="interval-tabs">
+        <For each={INTERVALS}>
+          {(int) => (
+            <button
+              class={`interval-btn ${interval() === int.value ? 'active' : ''}`}
+              onClick={() => {
+                setInterval(int.value);
+                loadKlines();
+              }}
+            >
+              {int.label}
+            </button>
+          )}
+        </For>
+      </div>
+
       {/* ====== TOP BAR ====== */}
       <div class="topbar glass-card">
         <div class="topbar-left">
@@ -405,7 +435,7 @@ function App() {
               )}
             </For>
           </select>
-          <span class="topbar-interval mono">1H</span>
+          <span class="topbar-interval mono">{interval().toUpperCase()}</span>
         </div>
 
         <div class="topbar-price-group">
@@ -452,7 +482,7 @@ function App() {
             </span>
             <span class="header-title">K-Line Chart</span>
           </div>
-          <div class="header-subtitle mono">1H Timeframe · {market()} Market</div>
+          <div class="header-subtitle mono">{interval().toUpperCase()} Timeframe · {market()} Market</div>
         </div>
 
         <div style="display: flex; align-items: center; gap: 16px;">

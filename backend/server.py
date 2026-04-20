@@ -91,34 +91,76 @@ def generate_mock_klines(num_bars: int = 100) -> list:
 
 
 # ========================================
+# Binance long-history pagination helper
+# ========================================
+async def get_binance_long_history(symbol: str, interval: str, years: int = 5) -> list:
+    """Fetch multi-year history from Binance using pagination (max 1000 per request)."""
+    limit = 1000
+    now = int(datetime.now().timestamp() * 1000)
+    start_time = now - (years * 365 * 24 * 60 * 60 * 1000)
+
+    all_klines = []
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        current = start_time
+        while current < now:
+            resp = await client.get(
+                "https://api.binance.com/api/v3/klines",
+                params={
+                    "symbol": symbol,
+                    "interval": interval,
+                    "startTime": current,
+                    "endTime": now,
+                    "limit": limit,
+                }
+            )
+            batch = resp.json()
+            if not batch:
+                break
+            all_klines.extend(batch)
+            current = batch[-1][0] + 1  # next batch starts after last candle
+
+    return all_klines
+
+
+# ========================================
 # GET /api/klines — Real Binance REST
 # ========================================
 
 @app.get("/api/klines")
-async def get_klines(symbol: str = "BTCUSDT", interval: str = "1h", limit: int = 500, market: str = "CRYPTO"):
+async def get_klines(
+    symbol: str = "BTCUSDT",
+    interval: str = "1d",
+    limit: int = 500,
+    market: str = "CRYPTO",
+    years: int = 5,
+):
     """Fetch real K-line data for CRYPTO/TWSE/US markets."""
     # CRYPTO → Binance
     if market == "CRYPTO":
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(
-                    "https://api.binance.com/api/v3/klines",
-                    params={"symbol": symbol, "interval": interval, "limit": limit}
-                )
-                resp.raise_for_status()
-                raw = resp.json()
-                data = [
-                    {
-                        "time": ts_to_taiwan(k[0]),
-                        "open": float(k[1]),
-                        "high": float(k[2]),
-                        "low": float(k[3]),
-                        "close": float(k[4]),
-                        "volume": float(k[7]),
-                    }
-                    for k in raw
-                ]
-                return { "symbol": symbol, "interval": interval, "data": data }
+            if interval == "1d":
+                # Use pagination to get multi-year history
+                raw = await get_binance_long_history(symbol, "1d", years=years)
+            else:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.get(
+                        "https://api.binance.com/api/v3/klines",
+                        params={"symbol": symbol, "interval": interval, "limit": limit}
+                    )
+                    resp.raise_for_status()
+                    raw = resp.json()
+            data = [
+                {
+                    "time": ts_to_taiwan(k[0]),
+                    "open": float(k[1]),
+                    "high": float(k[2]),
+                    "low": float(k[3]),
+                    "close": float(k[4]),
+                    "volume": float(k[7]),
+                }
+                for k in raw
+            ]
+            return { "symbol": symbol, "interval": interval, "data": data }
         except Exception:
             data = generate_mock_klines(num_bars=limit)
             from fastapi import Response
@@ -132,13 +174,15 @@ async def get_klines(symbol: str = "BTCUSDT", interval: str = "1h", limit: int =
     elif market == "TWSE":
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
+                start_date = (datetime.now() - timedelta(days=years * 365)).strftime("%Y-%m-%d")
+                end_date = datetime.now().strftime("%Y-%m-%d")
                 resp = await client.get(
                     "https://api.finmindtrade.com/api/v4/data",
                     params={
                         "dataset": "TaiwanStockPrice",
                         "data_id": symbol,
-                        "start_date": "2025-01-01",
-                        "end_date": "2026-04-20",
+                        "start_date": start_date,
+                        "end_date": end_date,
                     }
                 )
                 resp.raise_for_status()
@@ -183,7 +227,7 @@ async def get_klines(symbol: str = "BTCUSDT", interval: str = "1h", limit: int =
         try:
             import yfinance as yf
             ticker = yf.Ticker(symbol)
-            df = ticker.history(period="2y")
+            df = ticker.history(period="5y")  # 5-year history
             if df.empty:
                 raise ValueError("No US data")
             df = df.reset_index()
