@@ -63,6 +63,7 @@ def generate_mock_klines(num_bars: int = 100) -> list:
             "high": round(high_price, 2),
             "low": round(low_price, 2),
             "close": round(close_price, 2),
+            "volume": round(random.uniform(1000, 50000), 2),
         })
         current_price = close_price
 
@@ -97,6 +98,7 @@ async def get_klines(symbol: str = "BTCUSDT", interval: str = "1h", limit: int =
                     "high": float(k[2]),
                     "low": float(k[3]),
                     "close": float(k[4]),
+                    "volume": float(k[7]),
                 }
                 for k in raw
             ]
@@ -269,6 +271,9 @@ async def get_symbols(market: str = "CRYPTO"):
                 {"symbol": "BTCUSDT", "display": "BTC", "name": "Bitcoin"},
                 {"symbol": "ETHUSDT", "display": "ETH", "name": "Ethereum"},
                 {"symbol": "BNBUSDT", "display": "BNB", "name": "BNB"},
+                {"symbol": "SOLUSDT", "display": "SOL", "name": "Solana"},
+                {"symbol": "XRPUSDT", "display": "XRP", "name": "Ripple"},
+                {"symbol": "ADAUSDT", "display": "ADA", "name": "Cardano"},
             ]
         }
     elif market == "TWSE":
@@ -276,6 +281,10 @@ async def get_symbols(market: str = "CRYPTO"):
             "data": [
                 {"symbol": "2330", "display": "2330", "name": "台積電"},
                 {"symbol": "2317", "display": "2317", "name": "鴻海"},
+                {"symbol": "2454", "display": "2454", "name": "聯發科"},
+                {"symbol": "3008", "display": "3008", "name": "大立光"},
+                {"symbol": "2603", "display": "2603", "name": "長榮"},
+                {"symbol": "0050", "display": "0050", "name": "元大台灣50"},
             ]
         }
     elif market == "US":
@@ -283,6 +292,10 @@ async def get_symbols(market: str = "CRYPTO"):
             "data": [
                 {"symbol": "AAPL", "display": "AAPL", "name": "Apple"},
                 {"symbol": "TSLA", "display": "TSLA", "name": "Tesla"},
+                {"symbol": "NVDA", "display": "NVDA", "name": "NVIDIA"},
+                {"symbol": "MSFT", "display": "MSFT", "name": "Microsoft"},
+                {"symbol": "SPY", "display": "SPY", "name": "S&P 500 ETF"},
+                {"symbol": "QQQ", "display": "QQQ", "name": "Nasdaq 100 ETF"},
             ]
         }
     return {"data": []}

@@ -10,8 +10,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "solid-js": "^1.9.3",
-    "lightweight-charts": "^4.2.0"
+    "lightweight-charts": "^4.2.0",
+    "solid-js": "^1.9.3"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

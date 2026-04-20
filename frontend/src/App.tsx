@@ -7,6 +7,7 @@ interface KLine {
   high: number;
   low: number;
   close: number;
+  volume: number;
 }
 
 interface KLineResponse {
@@ -60,13 +61,16 @@ function App() {
   let chartContainerRef: HTMLDivElement | undefined;
   let smaContainerRef: HTMLDivElement | undefined;
   let rsiContainerRef: HTMLDivElement | undefined;
+  let volumeContainerRef: HTMLDivElement | undefined;
 
   let chart: IChartApi | null = null;
   let smaChart: IChartApi | null = null;
   let rsiChart: IChartApi | null = null;
+  let volumeChart: IChartApi | null = null;
   let candlestickSeries: ISeriesApi<'Candlestick'> | null = null;
   let smaSeries: ISeriesApi<'Line'> | null = null;
   let rsiSeries: ISeriesApi<'Line'> | null = null;
+  let volumeSeries: ISeriesApi<'Histogram'> | null = null;
 
   let ws: WebSocket | null = null;
   let lastKlineTime: number = 0;
@@ -165,6 +169,23 @@ function App() {
       wickDownColor: DOWN_WICK_COLOR,
     });
 
+    // Volume chart
+    if (volumeContainerRef) {
+      volumeChart = createChart(volumeContainerRef, {
+        ...baseChartOptions(100),
+        width: volumeContainerRef.clientWidth,
+        rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)', scaleMargins: { top: 0.1, bottom: 0 } },
+      });
+      volumeSeries = volumeChart.addHistogramSeries({
+        color: UP_COLOR,
+        priceFormat: { type: 'volume' },
+        priceScaleId: '',
+      });
+      volumeChart.priceScale('').applyOptions({
+        scaleMargins: { top: 0.1, bottom: 0 },
+      });
+    }
+
     // SMA chart
     smaChart = createChart(smaContainerRef, {
       ...baseChartOptions(120),
@@ -194,6 +215,7 @@ function App() {
     const roMain = new ResizeObserver(makeResizeHandler(chartContainerRef, chart));
     const roSMA = new ResizeObserver(makeResizeHandler(smaContainerRef, smaChart));
     const roRSI = new ResizeObserver(makeResizeHandler(rsiContainerRef, rsiChart));
+    const roVolume = new ResizeObserver(makeResizeHandler(volumeContainerRef!, volumeChart));
 
     roMain.observe(chartContainerRef);
     roSMA.observe(smaContainerRef);
@@ -203,10 +225,12 @@ function App() {
       roMain.disconnect();
       roSMA.disconnect();
       roRSI.disconnect();
+      roVolume.disconnect();
       ws?.close();
       chart?.remove();
       smaChart?.remove();
       rsiChart?.remove();
+      volumeChart?.remove();
     });
 
     loadKlines();
@@ -282,6 +306,17 @@ function App() {
 
       candlestickSeries?.setData(formattedData);
 
+      // Volume
+      if (volumeSeries && data.data) {
+        const volumeData = data.data.map((k) => ({
+          time: k.time as Time,
+          value: k.volume || 0,
+          color: k.close >= k.open ? 'rgba(0, 217, 165, 0.5)' : 'rgba(255, 91, 121, 0.5)',
+        }));
+        volumeSeries.setData(volumeData);
+        volumeChart?.timeScale().scrollToPosition(chart!.timeScale().scrollPosition(), true);
+      }
+
       // SMA + RSI
       const smaData = calcSMA(data.data, 20);
       const rsiData = calcRSI(data.data, 14);
@@ -311,6 +346,17 @@ function App() {
       chart?.timeScale().fitContent();
       smaChart?.timeScale().fitContent();
       rsiChart?.timeScale().fitContent();
+      volumeChart?.timeScale().fitContent();
+
+      // Sync time scale between candlestick and volume
+      if (chart && volumeChart) {
+        chart.timeScale().subscribeVisibleLogicalRangeChange((range: any) => {
+          if (range) volumeChart!.timeScale().setVisibleLogicalRange(range);
+        });
+        volumeChart.timeScale().subscribeVisibleLogicalRangeChange((range: any) => {
+          if (range) chart!.timeScale().setVisibleLogicalRange(range);
+        });
+      }
 
       setLoading(false);
       connectWebSocket();
@@ -442,6 +488,12 @@ function App() {
           ref={chartContainerRef}
           class="chart-container"
           style={{ opacity: loading() ? 0 : 1, transition: 'opacity 0.3s ease', height: '400px' }}
+        />
+
+        <div
+          ref={volumeContainerRef}
+          id="volume-chart"
+          style="height: 100px; margin-top: 8px;"
         />
 
         <Show when={loading()}>
