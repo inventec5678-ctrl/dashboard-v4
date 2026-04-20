@@ -258,7 +258,7 @@ function App() {
 
   function connectWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws/klines`;
+    const wsUrl = `${protocol}//${window.location.host}/ws/klines?symbol=${selectedSymbol()}&interval=${interval()}`;
 
     ws = new WebSocket(wsUrl);
 
@@ -386,10 +386,11 @@ function App() {
     }
   }
 
-  // Re-load klines when market or selected symbol changes
+  // Re-load klines when market, symbol, or interval changes
   createEffect(() => {
     const m = market();
     const s = selectedSymbol();
+    const tf = interval();
     if (symbols().length > 0) {
       loadKlines();
     }

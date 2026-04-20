@@ -304,10 +304,14 @@ manager = ConnectionManager()
 async def websocket_klines(websocket: WebSocket):
     """
     Proxy Binance WebSocket to clients.
-    Connects to wss://stream.binance.com:9443/ws/btcusdt@kline_1h
-    and forwards real-time kline data in our format.
+    Client connects with URL like /ws/klines?symbol=BTCUSDT&interval=1m
+    Connects to wss://stream.binance.com:9443/ws/btcusdt@kline_1m
     """
-    binance_ws_url = "wss://stream.binance.com:9443/ws/btcusdt@kline_1h"
+    # FastAPI WebSocket doesn't support query params as function args — extract from scope
+    params = dict(p.split("=") for p in websocket.url.query.decode().split("&") if "=" in p)
+    sym = params.get("symbol", "BTCUSDT").upper()
+    intv = params.get("interval", "1h").lower()
+    binance_ws_url = f"wss://stream.binance.com:9443/ws/{sym.lower()}@kline_{intv}"
 
     try:
         # Connect to Binance WebSocket
