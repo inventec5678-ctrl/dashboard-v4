@@ -15,10 +15,19 @@ interface KLineResponse {
   data: KLine[];
 }
 
+interface PriceUpdate {
+  type: 'price_update';
+  symbol: string;
+  price: number;
+  changePct: number;
+}
+
 function App() {
   let chartContainerRef: HTMLDivElement | undefined;
   let chart: IChartApi | null = null;
   let candlestickSeries: ISeriesApi<'Candlestick'> | null = null;
+  let ws: WebSocket | null = null;
+  let lastKlineTime: number = 0;
 
   const [loading, setLoading] = createSignal(true);
   const [error, setError] = createSignal<string | null>(null);
@@ -30,10 +39,15 @@ function App() {
   const [low24h, setLow24h] = createSignal(0);
   const [volume, setVolume] = createSignal(0);
 
+  // Price animation state
+  const [priceFlashClass, setPriceFlashClass] = createSignal('');
+
   const UP_COLOR = '#00D9A5';
   const DOWN_COLOR = '#FF5B79';
   const UP_WICK_COLOR = 'rgba(0, 217, 165, 0.8)';
   const DOWN_WICK_COLOR = 'rgba(255, 91, 121, 0.8)';
+
+  let openPriceRef = 0;
 
   onMount(async () => {
     if (!chartContainerRef) return;
@@ -99,12 +113,62 @@ function App() {
 
     onCleanup(() => {
       resizeObserver.disconnect();
+      ws?.close();
       chart?.remove();
     });
 
-    // Load data
+    // Load initial data
     await loadKlines();
   });
+
+  function connectWebSocket() {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws`;
+
+    ws = new WebSocket(wsUrl);
+
+    ws.onmessage = (event) => {
+      const data: PriceUpdate = JSON.parse(event.data);
+      if (data.type !== 'price_update') return;
+
+      const newPrice = data.price;
+      const prevPrice = lastPrice();
+      const direction = newPrice > prevPrice ? 'up' : newPrice < prevPrice ? 'down' : null;
+
+      // Trigger flash animation
+      if (direction && prevPrice > 0) {
+        setPriceFlashClass(direction === 'up' ? 'flash-up' : 'flash-down');
+        setTimeout(() => setPriceFlashClass(''), 500);
+      }
+
+      // Update last K-line close price on chart
+      if (candlestickSeries && lastKlineTime > 0) {
+        candlestickSeries.update({
+          time: lastKlineTime as any,
+          open: newPrice,
+          high: Math.max(newPrice, lastPrice()),
+          low: Math.min(newPrice, lastPrice()),
+          close: newPrice,
+        });
+      }
+
+      setLastPrice(newPrice);
+      setPriceChangePct(data.changePct);
+      // Calc absolute change from open price
+      if (openPriceRef > 0) {
+        setPriceChange(newPrice - openPriceRef);
+      }
+    };
+
+    ws.onerror = () => {
+      // Silently handle — will retry on next interval if needed
+    };
+
+    ws.onclose = () => {
+      // Auto-reconnect after 3s
+      setTimeout(connectWebSocket, 3000);
+    };
+  }
 
   async function loadKlines() {
     try {
@@ -118,6 +182,9 @@ function App() {
 
       if (!data.data || data.data.length === 0) throw new Error('No data');
 
+      // Store the first bar's open for changePct reference
+      openPriceRef = data.data[0].open;
+
       const formattedData = data.data.map((k) => ({
         time: k.time as any,
         open: k.open,
@@ -125,6 +192,9 @@ function App() {
         low: k.low,
         close: k.close,
       }));
+
+      // Track last K-line timestamp for updates
+      lastKlineTime = data.data[data.data.length - 1].time;
 
       candlestickSeries?.setData(formattedData);
 
@@ -154,6 +224,9 @@ function App() {
       chart?.timeScale().fitContent();
 
       setLoading(false);
+
+      // Connect WebSocket after data loads
+      connectWebSocket();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load');
       setLoading(false);
@@ -162,6 +235,50 @@ function App() {
 
   return (
     <div class="app-container">
+      {/* ====== TOP BAR — Real-time Price ====== */}
+      <div class="topbar glass-card">
+        <div class="topbar-left">
+          <span class="symbol-badge">
+            <span class="dot" />
+            {symbol()}
+          </span>
+          <span class="topbar-interval mono">1H</span>
+        </div>
+
+        <div class="topbar-price-group">
+          <span class={`topbar-price mono ${priceFlashClass()}`}>
+            {lastPrice().toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </span>
+          <span
+            class={`topbar-change mono ${priceChangePct() >= 0 ? 'text-green' : 'text-red'}`}
+          >
+            {priceChangePct() >= 0 ? '+' : ''}
+            {priceChangePct().toFixed(2)}%
+          </span>
+        </div>
+
+        <div class="topbar-right">
+          <div class="topbar-stat">
+            <span class="topbar-stat-label">24h High</span>
+            <span class="topbar-stat-value mono text-green">
+              {high24h().toLocaleString('en-US', { minimumFractionDigits: 2 })}
+            </span>
+          </div>
+          <div class="topbar-stat">
+            <span class="topbar-stat-label">24h Low</span>
+            <span class="topbar-stat-value mono text-red">
+              {low24h().toLocaleString('en-US', { minimumFractionDigits: 2 })}
+            </span>
+          </div>
+          <div class="topbar-stat">
+            <span class="topbar-stat-label">Volume</span>
+            <span class="topbar-stat-value mono text-blue">
+              {(volume() / 1000).toFixed(1)}K
+            </span>
+          </div>
+        </div>
+      </div>
+
       {/* Header */}
       <header class="header glass-card" style="padding: 20px 24px;">
         <div>
@@ -189,7 +306,7 @@ function App() {
       {/* Price Overlay */}
       <div class="chart-wrapper glass-card" style="position: relative;">
         <div class="chart-overlay">
-          <div class="chart-price mono">
+          <div class={`chart-price mono ${priceFlashClass()}`}>
             {lastPrice().toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
           <div
