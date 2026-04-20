@@ -57,6 +57,13 @@ function calcRSI(data: KLine[], period: number = 14): { time: Time; value: numbe
   return result;
 }
 
+function formatVolume(v: number): string {
+  if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B';
+  if (v >= 1e6) return (v / 1e6).toFixed(2) + 'M';
+  if (v >= 1e3) return (v / 1e3).toFixed(1) + 'K';
+  return v.toFixed(0);
+}
+
 function App() {
   let chartContainerRef: HTMLDivElement | undefined;
   let smaContainerRef: HTMLDivElement | undefined;
@@ -251,7 +258,7 @@ function App() {
 
   function connectWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
+    const wsUrl = `${protocol}//${window.location.host}/ws/klines`;
 
     ws = new WebSocket(wsUrl);
 
@@ -466,7 +473,7 @@ function App() {
           <div class="topbar-stat">
             <span class="topbar-stat-label">Volume</span>
             <span class="topbar-stat-value mono text-blue">
-              {(volume() / 1000).toFixed(1)}K
+              {formatVolume(volume())}
             </span>
           </div>
         </div>
@@ -578,7 +585,7 @@ function App() {
         <div class="glass-card stat-item">
           <span class="stat-label">Volume</span>
           <span class="stat-value mono text-blue">
-            {(volume() / 1000).toFixed(1)}K
+            {formatVolume(volume())}
           </span>
         </div>
         <div class="glass-card stat-item">
