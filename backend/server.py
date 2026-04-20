@@ -106,7 +106,13 @@ def detect_volume_anomalies(data: list, window: int = 20, z_threshold: float = 2
 
 
 def resample_klines(data: list, rule: str) -> list:
-    """Resample 日K data to 週K or 月K."""
+    """
+    Resample K-line data to a different interval.
+    rule: 'W' (weekly), 'ME' (monthly), 'H' (hourly — for US 1h from 1d, rare)
+    Note: resampling from daily to intraday (1h/4h) is inherently lossy;
+    lightweight-charts expects real timestamps, so for 1h/4h on US/TWSE
+    we return daily data and set interval_approximated=True instead.
+    """
     if not data:
         return []
     df = pd.DataFrame(data)
@@ -253,14 +259,14 @@ async def get_klines(
                 data = resample_klines(data, 'W')
             elif interval == "1mo":
                 data = resample_klines(data, 'ME')
-            return { "symbol": symbol, "interval": interval, "data": data }
+            return { "symbol": symbol, "interval": interval, "data": data, "interval_approximated": False }
         except Exception as e:
             import sys, traceback
             traceback.print_exc(file=sys.stderr)
             data = generate_mock_klines(num_bars=limit)
             from fastapi import Response
             return Response(
-                content=json.dumps({ "symbol": symbol, "interval": interval, "data": data }),
+                content=json.dumps({ "symbol": symbol, "interval": interval, "data": data, "interval_approximated": False }),
                 media_type="application/json",
                 headers={"X-Data-Source": "mock"}
             )
@@ -299,6 +305,7 @@ async def get_klines(
                     }
                     for d in sorted_data
                 ]
+                interval_approximated = interval in ("1h", "4h")
                 if interval == "1d":
                     data = full_data[-limit:]
                 elif interval == "1w":
@@ -306,15 +313,21 @@ async def get_klines(
                 elif interval == "1mo":
                     data = resample_klines(full_data, 'ME')
                 else:
+                    # 1h/4h: FinMind has no intraday → return daily with flag
                     data = full_data[-limit:]
-                return { "symbol": symbol, "interval": interval, "data": data }
+                return {
+                    "symbol": symbol,
+                    "interval": interval,
+                    "data": data,
+                    "interval_approximated": interval_approximated,
+                }
         except Exception as e:
             import sys, traceback
             traceback.print_exc(file=sys.stderr)
             data = generate_mock_klines(num_bars=limit)
             from fastapi import Response
             return Response(
-                content=json.dumps({ "symbol": symbol, "interval": interval, "data": data }),
+                content=json.dumps({ "symbol": symbol, "interval": interval, "data": data, "interval_approximated": False }),
                 media_type="application/json",
                 headers={"X-Data-Source": "mock"}
             )
@@ -324,37 +337,80 @@ async def get_klines(
         try:
             import yfinance as yf
             ticker = yf.Ticker(symbol)
-            df = ticker.history(period="5y")  # 5-year history
-            if df.empty:
-                raise ValueError("No US data")
-            df = df.reset_index()
-            daily_data = [
-                {
-                    "time": int(df.iloc[i]["Date"].timestamp()),
-                    "open": float(df.iloc[i]["Open"]),
-                    "high": float(df.iloc[i]["High"]),
-                    "low": float(df.iloc[i]["Low"]),
-                    "close": float(df.iloc[i]["Close"]),
-                    "volume": float(df.iloc[i]["Volume"]),
-                }
-                for i in range(len(df))
-            ]
-            if interval == "1d":
-                data = daily_data[-limit:]
-            elif interval == "1w":
-                data = resample_klines(daily_data, 'W')
-            elif interval == "1mo":
-                data = resample_klines(daily_data, 'ME')
+            interval_approximated = False
+
+            # 1h and 4h: fetch real intraday data from yfinance
+            if interval in ("1h", "4h"):
+                period_map = {"1h": "5d", "4h": "5d"}
+                df = ticker.history(period=period_map.get(interval, "5d"), interval=interval)
+                if df.empty:
+                    # Fallback: no intraday data available — return daily data with flag
+                    df = ticker.history(period="5y")
+                    df = df.reset_index()
+                    daily_data = [
+                        {
+                            "time": int(df.iloc[i]["Date"].timestamp()),
+                            "open": float(df.iloc[i]["Open"]),
+                            "high": float(df.iloc[i]["High"]),
+                            "low": float(df.iloc[i]["Low"]),
+                            "close": float(df.iloc[i]["Close"]),
+                            "volume": float(df.iloc[i]["Volume"]),
+                        }
+                        for i in range(len(df))
+                    ]
+                    data = daily_data[-limit:]
+                    interval_approximated = True
+                else:
+                    df = df.reset_index()
+                    data = [
+                        {
+                            # Datetime column for intraday; use its timestamp
+                            "time": int(df.iloc[i]["Datetime"].timestamp()),
+                            "open": float(df.iloc[i]["Open"]),
+                            "high": float(df.iloc[i]["High"]),
+                            "low": float(df.iloc[i]["Low"]),
+                            "close": float(df.iloc[i]["Close"]),
+                            "volume": float(df.iloc[i]["Volume"]),
+                        }
+                        for i in range(len(df))
+                    ]
             else:
-                data = daily_data[-limit:]
-            return { "symbol": symbol, "interval": interval, "data": data }
+                # 1d / 1w / 1mo: use daily klines and resample
+                df = ticker.history(period="5y")
+                df = df.reset_index()
+                daily_data = [
+                    {
+                        "time": int(df.iloc[i]["Date"].timestamp()),
+                        "open": float(df.iloc[i]["Open"]),
+                        "high": float(df.iloc[i]["High"]),
+                        "low": float(df.iloc[i]["Low"]),
+                        "close": float(df.iloc[i]["Close"]),
+                        "volume": float(df.iloc[i]["Volume"]),
+                    }
+                    for i in range(len(df))
+                ]
+                if interval == "1d":
+                    data = daily_data[-limit:]
+                elif interval == "1w":
+                    data = resample_klines(daily_data, 'W')
+                elif interval == "1mo":
+                    data = resample_klines(daily_data, 'ME')
+                else:
+                    data = daily_data[-limit:]
+
+            return {
+                "symbol": symbol,
+                "interval": interval,
+                "data": data,
+                "interval_approximated": interval_approximated,
+            }
         except Exception as e:
             import sys, traceback
             traceback.print_exc(file=sys.stderr)
             data = generate_mock_klines(num_bars=limit)
             from fastapi import Response
             return Response(
-                content=json.dumps({ "symbol": symbol, "interval": interval, "data": data }),
+                content=json.dumps({ "symbol": symbol, "interval": interval, "data": data, "interval_approximated": False }),
                 media_type="application/json",
                 headers={"X-Data-Source": "mock"}
             )

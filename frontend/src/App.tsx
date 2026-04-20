@@ -54,6 +54,7 @@ interface KLineResponse {
   symbol: string;
   interval: string;
   data: KLine[];
+  interval_approximated?: boolean;
 }
 
 interface PriceUpdate {
@@ -133,6 +134,7 @@ function App() {
 
   const [loading, setLoading] = createSignal(true);
   const [error, setError] = createSignal<string | null>(null);
+  const [intervalApproximated, setIntervalApproximated] = createSignal(false);
   const [lastPrice, setLastPrice] = createSignal<number>(0);
   const [priceChange, setPriceChange] = createSignal<number>(0);
   const [priceChangePct, setPriceChangePct] = createSignal<number>(0);
@@ -468,6 +470,7 @@ function App() {
 
       if (!data.data || data.data.length === 0) throw new Error('No data');
 
+      setIntervalApproximated(data.interval_approximated ?? false);
       openPriceRef = data.data[0].open;
 
       const formattedData = data.data.map((k) => ({
@@ -742,7 +745,12 @@ function App() {
             </span>
             <span class="header-title">K-Line Chart</span>
           </div>
-          <div class="header-subtitle mono">{interval().toUpperCase()} Timeframe · {market()} Market</div>
+          <div class="header-subtitle mono">
+            {interval().toUpperCase()} Timeframe · {market()} Market · UTC+8
+            <Show when={intervalApproximated()}>
+              <span style="color: #FFA500; margin-left: 8px; font-size: 0.7rem;">⚠ Approximated (daily data)</span>
+            </Show>
+          </div>
         </div>
 
         <div style="display: flex; align-items: center; gap: 16px;">
