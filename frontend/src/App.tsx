@@ -86,6 +86,8 @@ function App() {
         borderColor: 'rgba(255, 255, 255, 0.06)',
         timeVisible: true,
         secondsVisible: false,
+        // timezone: lightweight-charts v4 uses client local timezone automatically
+        // if user is in Asia/Taipei (UTC+8), chart displays in Taiwan time
       },
       handleScroll: { mouseWheel: true, pressedMouseMove: true },
       handleScale: { mouseWheel: true, pinch: true },
