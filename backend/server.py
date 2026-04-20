@@ -74,8 +74,13 @@ def generate_mock_klines(num_bars: int = 100) -> list:
 # ========================================
 
 @app.get("/api/klines")
-async def get_klines(symbol: str = "BTCUSDT", interval: str = "1h", limit: int = 100):
+async def get_klines(symbol: str = "BTCUSDT", interval: str = "1h", limit: int = 100, market: str = "CRYPTO"):
     """Fetch real K-line data from Binance REST API."""
+    # TWSE/US 目前沒有真實 API，先用 mock data
+    if market != "CRYPTO":
+        data = generate_mock_klines(num_bars=limit)
+        return { "symbol": symbol, "interval": interval, "data": data }
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
@@ -251,6 +256,36 @@ async def websocket_klines(websocket: WebSocket):
     except WebSocketDisconnect:
         pump_task.cancel()
         manager.disconnect(websocket)
+
+
+# ========================================
+# GET /api/symbols — 三市場 Symbol 列表
+# ========================================
+@app.get("/api/symbols")
+async def get_symbols(market: str = "CRYPTO"):
+    if market == "CRYPTO":
+        return {
+            "data": [
+                {"symbol": "BTCUSDT", "display": "BTC", "name": "Bitcoin"},
+                {"symbol": "ETHUSDT", "display": "ETH", "name": "Ethereum"},
+                {"symbol": "BNBUSDT", "display": "BNB", "name": "BNB"},
+            ]
+        }
+    elif market == "TWSE":
+        return {
+            "data": [
+                {"symbol": "2330", "display": "2330", "name": "台積電"},
+                {"symbol": "2317", "display": "2317", "name": "鴻海"},
+            ]
+        }
+    elif market == "US":
+        return {
+            "data": [
+                {"symbol": "AAPL", "display": "AAPL", "name": "Apple"},
+                {"symbol": "TSLA", "display": "TSLA", "name": "Tesla"},
+            ]
+        }
+    return {"data": []}
 
 
 if __name__ == "__main__":

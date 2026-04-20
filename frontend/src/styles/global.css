@@ -419,3 +419,59 @@ body::before {
   font-size: 0.875rem;
   color: var(--text-secondary);
 }
+
+/* ========================================
+   Market Tabs
+   ======================================== */
+.market-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 0;
+}
+
+.tab-btn {
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  font-family: 'Inter', sans-serif;
+  background: rgba(255,255,255,0.05);
+  color: #8B95A8;
+  transition: all 0.2s;
+}
+
+.tab-btn:hover {
+  background: rgba(255,255,255,0.1);
+  transform: translateY(-1px);
+}
+
+.tab-btn.active {
+  background: rgba(0, 217, 165, 0.15);
+  color: #00D9A5;
+}
+
+/* ========================================
+   Symbol Select
+   ======================================== */
+.symbol-select {
+  padding: 6px 12px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.2s;
+}
+
+.symbol-select:hover {
+  background: rgba(255,255,255,0.08);
+  border-color: var(--border-active);
+}
+
+.symbol-select option {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}

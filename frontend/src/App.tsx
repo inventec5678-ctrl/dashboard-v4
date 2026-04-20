@@ -1,5 +1,5 @@
-import { createSignal, createEffect, onMount, onCleanup, Show } from 'solid-js';
-import { createChart, ColorType, CrosshairMode, IChartApi, ISeriesApi } from 'lightweight-charts';
+import { createSignal, createEffect, onMount, onCleanup, Show, For } from 'solid-js';
+import { createChart, ColorType, CrosshairMode, IChartApi, ISeriesApi, LineWidth, Time } from 'lightweight-charts';
 
 interface KLine {
   time: number;
@@ -22,10 +22,52 @@ interface PriceUpdate {
   changePct: number;
 }
 
+interface SymbolInfo {
+  symbol: string;
+  display: string;
+  name: string;
+}
+
+// --- Indicator helpers ---
+function calcSMA(data: KLine[], period: number = 20): { time: Time; value: number }[] {
+  const closes = data.map(d => d.close);
+  const result: { time: Time; value: number }[] = [];
+  for (let i = period - 1; i < closes.length; i++) {
+    const avg = closes.slice(i - period + 1, i + 1).reduce((a, b) => a + b, 0) / period;
+    result.push({ time: data[i].time as Time, value: avg });
+  }
+  return result;
+}
+
+function calcRSI(data: KLine[], period: number = 14): { time: Time; value: number }[] {
+  const closes = data.map(d => d.close);
+  const result: { time: Time; value: number }[] = [];
+  for (let i = period; i < closes.length; i++) {
+    let gains = 0, losses = 0;
+    for (let j = i - period; j < i; j++) {
+      const diff = closes[j + 1] - closes[j];
+      if (diff > 0) gains += diff;
+      else losses -= diff;
+    }
+    const rs = gains / losses || 0;
+    const rsi = 100 - (100 / (1 + rs));
+    result.push({ time: data[i].time as Time, value: rsi });
+  }
+  return result;
+}
+
 function App() {
   let chartContainerRef: HTMLDivElement | undefined;
+  let smaContainerRef: HTMLDivElement | undefined;
+  let rsiContainerRef: HTMLDivElement | undefined;
+
   let chart: IChartApi | null = null;
+  let smaChart: IChartApi | null = null;
+  let rsiChart: IChartApi | null = null;
   let candlestickSeries: ISeriesApi<'Candlestick'> | null = null;
+  let smaSeries: ISeriesApi<'Line'> | null = null;
+  let rsiSeries: ISeriesApi<'Line'> | null = null;
+
   let ws: WebSocket | null = null;
   let lastKlineTime: number = 0;
 
@@ -39,6 +81,11 @@ function App() {
   const [low24h, setLow24h] = createSignal(0);
   const [volume, setVolume] = createSignal(0);
 
+  // Market & Symbol selector
+  const [market, setMarket] = createSignal<'CRYPTO' | 'TWSE' | 'US'>('CRYPTO');
+  const [symbols, setSymbols] = createSignal<SymbolInfo[]>([]);
+  const [selectedSymbol, setSelectedSymbol] = createSignal('BTCUSDT');
+
   // Price animation state
   const [priceFlashClass, setPriceFlashClass] = createSignal('');
 
@@ -49,48 +96,64 @@ function App() {
 
   let openPriceRef = 0;
 
-  onMount(async () => {
-    if (!chartContainerRef) return;
+  // Fetch symbols when market changes
+  createEffect(() => {
+    const m = market();
+    fetch(`/api/symbols?market=${m}`)
+      .then(r => r.json())
+      .then(d => {
+        setSymbols(d.data as SymbolInfo[]);
+        if (d.data.length > 0) setSelectedSymbol(d.data[0].symbol);
+      });
+  });
 
+  const baseChartOptions = (height: number) => ({
+    layout: {
+      background: { type: ColorType.Solid, color: 'transparent' },
+      textColor: '#8B95A8',
+      fontFamily: "'JetBrains Mono', monospace",
+      fontSize: 11,
+    },
+    grid: {
+      vertLines: { color: 'rgba(255, 255, 255, 0.03)' },
+      horzLines: { color: 'rgba(255, 255, 255, 0.03)' },
+    },
+    crosshair: {
+      mode: CrosshairMode.Normal,
+      vertLine: {
+        color: 'rgba(139, 149, 168, 0.4)',
+        width: 1 as LineWidth,
+        style: 0,
+        labelBackgroundColor: '#1E2433',
+      },
+      horzLine: {
+        color: 'rgba(139, 149, 168, 0.4)',
+        width: 1 as LineWidth,
+        style: 0,
+        labelBackgroundColor: '#1E2433',
+      },
+    },
+    rightPriceScale: {
+      borderColor: 'rgba(255, 255, 255, 0.06)',
+      scaleMargins: { top: 0.1, bottom: 0.1 },
+    },
+    timeScale: {
+      borderColor: 'rgba(255, 255, 255, 0.06)',
+      timeVisible: true,
+      secondsVisible: false,
+    },
+    handleScroll: { mouseWheel: true, pressedMouseMove: true },
+    handleScale: { mouseWheel: true, pinch: true },
+    height,
+  });
+
+  onMount(() => {
+    if (!chartContainerRef || !smaContainerRef || !rsiContainerRef) return;
+
+    // Main candlestick chart
     chart = createChart(chartContainerRef, {
-      layout: {
-        background: { type: ColorType.Solid, color: 'transparent' },
-        textColor: '#8B95A8',
-        fontFamily: "'JetBrains Mono', monospace",
-        fontSize: 11,
-      },
-      grid: {
-        vertLines: { color: 'rgba(255, 255, 255, 0.03)' },
-        horzLines: { color: 'rgba(255, 255, 255, 0.03)' },
-      },
-      crosshair: {
-        mode: CrosshairMode.Normal,
-        vertLine: {
-          color: 'rgba(139, 149, 168, 0.4)',
-          width: 1,
-          style: 0,
-          labelBackgroundColor: '#1E2433',
-        },
-        horzLine: {
-          color: 'rgba(139, 149, 168, 0.4)',
-          width: 1,
-          style: 0,
-          labelBackgroundColor: '#1E2433',
-        },
-      },
-      rightPriceScale: {
-        borderColor: 'rgba(255, 255, 255, 0.06)',
-        scaleMargins: { top: 0.1, bottom: 0.1 },
-      },
-      timeScale: {
-        borderColor: 'rgba(255, 255, 255, 0.06)',
-        timeVisible: true,
-        secondsVisible: false,
-        // timezone: lightweight-charts v4 uses client local timezone automatically
-        // if user is in Asia/Taipei (UTC+8), chart displays in Taiwan time
-      },
-      handleScroll: { mouseWheel: true, pressedMouseMove: true },
-      handleScale: { mouseWheel: true, pinch: true },
+      ...baseChartOptions(400),
+      width: chartContainerRef.clientWidth,
     });
 
     candlestickSeries = chart.addCandlestickSeries({
@@ -102,25 +165,51 @@ function App() {
       wickDownColor: DOWN_WICK_COLOR,
     });
 
-    // Responsive resize
-    const resizeObserver = new ResizeObserver(() => {
-      if (chart && chartContainerRef) {
-        chart.applyOptions({
-          width: chartContainerRef.clientWidth,
-          height: chartContainerRef.clientHeight,
-        });
-      }
+    // SMA chart
+    smaChart = createChart(smaContainerRef, {
+      ...baseChartOptions(120),
+      width: smaContainerRef.clientWidth,
+      rightPriceScale: { borderColor: 'rgba(255, 255, 255, 0.06)', scaleMargins: { top: 0.2, bottom: 0.2 } },
     });
-    resizeObserver.observe(chartContainerRef);
+    smaSeries = smaChart.addLineSeries({ color: '#FFA500', lineWidth: 1 as LineWidth, title: 'SMA20' });
+
+    // RSI chart
+    rsiChart = createChart(rsiContainerRef, {
+      ...baseChartOptions(120),
+      width: rsiContainerRef.clientWidth,
+      rightPriceScale: { borderColor: 'rgba(255, 255, 255, 0.06)', scaleMargins: { top: 0.2, bottom: 0.2 } },
+    });
+    rsiSeries = rsiChart.addLineSeries({ color: '#9B59B6', lineWidth: 1 as LineWidth, title: 'RSI14' });
+    // RSI reference lines at 70/30
+    rsiChart.addLineSeries({ color: 'rgba(255,0,0,0.3)', lineWidth: 1 as LineWidth, lineStyle: 2 });
+    rsiChart.addLineSeries({ color: 'rgba(0,255,0,0.3)', lineWidth: 1 as LineWidth, lineStyle: 2 });
+
+    // Responsive resize
+    const makeResizeHandler = (c: HTMLDivElement, api: IChartApi | null) => () => {
+      if (api && c) {
+        api.applyOptions({ width: c.clientWidth, height: c.clientHeight });
+      }
+    };
+
+    const roMain = new ResizeObserver(makeResizeHandler(chartContainerRef, chart));
+    const roSMA = new ResizeObserver(makeResizeHandler(smaContainerRef, smaChart));
+    const roRSI = new ResizeObserver(makeResizeHandler(rsiContainerRef, rsiChart));
+
+    roMain.observe(chartContainerRef);
+    roSMA.observe(smaContainerRef);
+    roRSI.observe(rsiContainerRef);
 
     onCleanup(() => {
-      resizeObserver.disconnect();
+      roMain.disconnect();
+      roSMA.disconnect();
+      roRSI.disconnect();
       ws?.close();
       chart?.remove();
+      smaChart?.remove();
+      rsiChart?.remove();
     });
 
-    // Load initial data
-    await loadKlines();
+    loadKlines();
   });
 
   function connectWebSocket() {
@@ -137,16 +226,14 @@ function App() {
       const prevPrice = lastPrice();
       const direction = newPrice > prevPrice ? 'up' : newPrice < prevPrice ? 'down' : null;
 
-      // Trigger flash animation
       if (direction && prevPrice > 0) {
         setPriceFlashClass(direction === 'up' ? 'flash-up' : 'flash-down');
         setTimeout(() => setPriceFlashClass(''), 500);
       }
 
-      // Update last K-line close price on chart
       if (candlestickSeries && lastKlineTime > 0) {
         candlestickSeries.update({
-          time: lastKlineTime as any,
+          time: lastKlineTime as Time,
           open: newPrice,
           high: Math.max(newPrice, lastPrice()),
           low: Math.min(newPrice, lastPrice()),
@@ -156,18 +243,14 @@ function App() {
 
       setLastPrice(newPrice);
       setPriceChangePct(data.changePct);
-      // Calc absolute change from open price
       if (openPriceRef > 0) {
         setPriceChange(newPrice - openPriceRef);
       }
     };
 
-    ws.onerror = () => {
-      // Silently handle — will retry on next interval if needed
-    };
+    ws.onerror = () => { };
 
     ws.onclose = () => {
-      // Auto-reconnect after 3s
       setTimeout(connectWebSocket, 3000);
     };
   }
@@ -177,30 +260,35 @@ function App() {
       setLoading(true);
       setError(null);
 
-      const response = await fetch('/api/klines?symbol=BTCUSDT&interval=1h&limit=100');
+      const url = `/api/klines?symbol=${selectedSymbol()}&interval=1h&limit=100&market=${market()}`;
+      const response = await fetch(url);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
       const data: KLineResponse = await response.json();
 
       if (!data.data || data.data.length === 0) throw new Error('No data');
 
-      // Store the first bar's open for changePct reference
       openPriceRef = data.data[0].open;
 
       const formattedData = data.data.map((k) => ({
-        time: k.time as any,
+        time: k.time as Time,
         open: k.open,
         high: k.high,
         low: k.low,
         close: k.close,
       }));
 
-      // Track last K-line timestamp for updates
       lastKlineTime = data.data[data.data.length - 1].time;
 
       candlestickSeries?.setData(formattedData);
 
-      // Calculate stats
+      // SMA + RSI
+      const smaData = calcSMA(data.data, 20);
+      const rsiData = calcRSI(data.data, 14);
+      smaSeries?.setData(smaData);
+      rsiSeries?.setData(rsiData);
+
+      // Stats
       const last = data.data[data.data.length - 1];
       const first = data.data[0];
       const lastClose = last.close;
@@ -213,21 +301,18 @@ function App() {
       setPriceChangePct(changePct);
       setSymbol(data.symbol);
 
-      // 24h high/low from all data
       const highs = data.data.map((k) => k.high);
       const lows = data.data.map((k) => k.low);
       setHigh24h(Math.max(...highs));
       setLow24h(Math.min(...lows));
 
-      // Fake volume
       setVolume(Math.random() * 50000 + 10000);
 
-      // Fit content
       chart?.timeScale().fitContent();
+      smaChart?.timeScale().fitContent();
+      rsiChart?.timeScale().fitContent();
 
       setLoading(false);
-
-      // Connect WebSocket after data loads
       connectWebSocket();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load');
@@ -235,15 +320,45 @@ function App() {
     }
   }
 
+  // Re-load klines when market or selected symbol changes
+  createEffect(() => {
+    const m = market();
+    const s = selectedSymbol();
+    if (symbols().length > 0) {
+      loadKlines();
+    }
+  });
+
   return (
     <div class="app-container">
-      {/* ====== TOP BAR — Real-time Price ====== */}
+      {/* ====== Market Tabs ====== */}
+      <div class="market-tabs">
+        <For each={['CRYPTO', 'TWSE', 'US'] as const}>
+          {(m) => (
+            <button
+              class={`tab-btn ${market() === m ? 'active' : ''}`}
+              onClick={() => setMarket(m)}
+            >
+              {m}
+            </button>
+          )}
+        </For>
+      </div>
+
+      {/* ====== TOP BAR ====== */}
       <div class="topbar glass-card">
         <div class="topbar-left">
-          <span class="symbol-badge">
-            <span class="dot" />
-            {symbol()}
-          </span>
+          <select
+            class="symbol-select"
+            value={selectedSymbol()}
+            onChange={e => setSelectedSymbol(e.target.value)}
+          >
+            <For each={symbols()}>
+              {(s) => (
+                <option value={s.symbol}>{s.display} — {s.name}</option>
+              )}
+            </For>
+          </select>
           <span class="topbar-interval mono">1H</span>
         </div>
 
@@ -291,7 +406,7 @@ function App() {
             </span>
             <span class="header-title">K-Line Chart</span>
           </div>
-          <div class="header-subtitle mono">1H Timeframe · Live Data</div>
+          <div class="header-subtitle mono">1H Timeframe · {market()} Market</div>
         </div>
 
         <div style="display: flex; align-items: center; gap: 16px;">
@@ -305,7 +420,7 @@ function App() {
         </div>
       </header>
 
-      {/* Price Overlay */}
+      {/* Candlestick Chart */}
       <div class="chart-wrapper glass-card" style="position: relative;">
         <div class="chart-overlay">
           <div class={`chart-price mono ${priceFlashClass()}`}>
@@ -323,14 +438,12 @@ function App() {
           </div>
         </div>
 
-        {/* Chart */}
         <div
           ref={chartContainerRef}
           class="chart-container"
-          style={{ opacity: loading() ? 0 : 1, transition: 'opacity 0.3s ease' }}
+          style={{ opacity: loading() ? 0 : 1, transition: 'opacity 0.3s ease', height: '400px' }}
         />
 
-        {/* Loading Overlay */}
         <Show when={loading()}>
           <div class="loading-overlay">
             <div class="loading-spinner" />
@@ -338,7 +451,6 @@ function App() {
           </div>
         </Show>
 
-        {/* Error State */}
         <Show when={error()}>
           <div class="loading-overlay">
             <div class="loading-text" style="color: var(--accent-red);">
@@ -349,6 +461,22 @@ function App() {
             </button>
           </div>
         </Show>
+      </div>
+
+      {/* SMA Chart */}
+      <div class="chart-wrapper glass-card" style="position: relative;">
+        <div style="padding: 8px 16px; font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-mono);">
+          SMA20
+        </div>
+        <div ref={smaContainerRef} style="height: 120px;" />
+      </div>
+
+      {/* RSI Chart */}
+      <div class="chart-wrapper glass-card" style="position: relative;">
+        <div style="padding: 8px 16px; font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-mono);">
+          RSI14 (overbought &gt;70, oversold &lt;30)
+        </div>
+        <div ref={rsiContainerRef} style="height: 120px;" />
       </div>
 
       {/* Stats Bar */}
