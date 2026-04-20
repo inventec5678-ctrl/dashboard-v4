@@ -508,6 +508,17 @@ function App() {
 
       candlestickSeries?.setData(formattedData);
 
+      // For monthly (1M) data with many years, default to showing last 24 bars
+      // so candles render at readable width instead of 1-2px slivers
+      const barsToShow = interval() === '1mo' ? 24 : undefined;
+      if (barsToShow && formattedData.length > barsToShow) {
+        const lastTime = formattedData[formattedData.length - 1].time as number;
+        const firstTime = formattedData[formattedData.length - barsToShow].time as number;
+        chart?.timeScale().setVisibleRange({ from: firstTime, to: lastTime + 86400 * 31 });
+      } else {
+        chart?.timeScale().fitContent();
+      }
+
       // Volume
       if (volumeSeries && data.data) {
         const volumeData = data.data.map((k) => ({
@@ -629,10 +640,14 @@ function App() {
 
       setVolume(Math.random() * 50000 + 10000);
 
-      chart?.timeScale().fitContent();
-      smaChart?.timeScale().fitContent();
-      rsiChart?.timeScale().fitContent();
-      volumeChart?.timeScale().fitContent();
+      // Only fitContent for non-1mo (1mo has its own visible range logic above)
+      const isMonthly = interval() === '1mo' && data.data.length > 24;
+      if (!isMonthly) {
+        chart?.timeScale().fitContent();
+        smaChart?.timeScale().fitContent();
+        rsiChart?.timeScale().fitContent();
+        volumeChart?.timeScale().fitContent();
+      }
 
       // Sync time scale between candlestick and volume
       if (chart && volumeChart) {
