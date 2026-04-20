@@ -1,6 +1,46 @@
 import { createSignal, createEffect, onMount, onCleanup, Show, For } from 'solid-js';
 import { createChart, ColorType, CrosshairMode, IChartApi, ISeriesApi, LineWidth, Time } from 'lightweight-charts';
 
+interface MACDData { time: Time; macd: number; signal: number; histogram: number; }
+
+function calcMACD(data: KLine[]): MACDData[] {
+  const closes = data.map(d => d.close);
+  const period = 14;
+  if (closes.length < 27) return [];
+
+  // EMA helper
+  const calcEMA = (vals: number[], p: number): number[] => {
+    const mult = 2 / (p + 1);
+    const ema = [vals.slice(0, p).reduce((a, b) => a + b, 0) / p];
+    for (let i = p; i < vals.length; i++) ema.push((vals[i] - ema[ema.length - 1]) * mult + ema[ema.length - 1]);
+    return ema;
+  };
+
+  // Full EMAs
+  const emaFast = calcEMA(closes, 12);
+  const emaSlow = calcEMA(closes, 26);
+
+  // MACD line (index slow-1 onwards in closes = index 25)
+  const macdVals: number[] = [];
+  for (let i = 25; i < closes.length; i++) {
+    const fIdx = i - 11, sIdx = i - 25;
+    macdVals.push(emaFast[fIdx] - emaSlow[sIdx]);
+  }
+
+  // Signal line
+  const sigEMA = calcEMA(macdVals, 9);
+
+  const result: MACDData[] = [];
+  for (let i = 0; i < sigEMA.length; i++) {
+    const dataIdx = 25 + 8 + i;
+    if (dataIdx < data.length) {
+      const m = macdVals[8 + i];
+      result.push({ time: data[dataIdx].time as Time, macd: m, signal: sigEMA[i], histogram: m - sigEMA[i] });
+    }
+  }
+  return result;
+}
+
 interface KLine {
   time: number;
   open: number;
@@ -69,15 +109,20 @@ function App() {
   let smaContainerRef: HTMLDivElement | undefined;
   let rsiContainerRef: HTMLDivElement | undefined;
   let volumeContainerRef: HTMLDivElement | undefined;
+  let macdContainerRef: HTMLDivElement | undefined;
 
   let chart: IChartApi | null = null;
   let smaChart: IChartApi | null = null;
   let rsiChart: IChartApi | null = null;
   let volumeChart: IChartApi | null = null;
+  let macdChart: IChartApi | null = null;
   let candlestickSeries: ISeriesApi<'Candlestick'> | null = null;
   let smaSeries: ISeriesApi<'Line'> | null = null;
   let rsiSeries: ISeriesApi<'Line'> | null = null;
   let volumeSeries: ISeriesApi<'Histogram'> | null = null;
+  let macdSeries: ISeriesApi<'Line'> | null = null;
+  let macdSignalSeries: ISeriesApi<'Line'> | null = null;
+  let macdHistogramSeries: ISeriesApi<'Histogram'> | null = null;
 
   let ws: WebSocket | null = null;
   let lastKlineTime: number = 0;
@@ -225,6 +270,23 @@ function App() {
     rsiChart.addLineSeries({ color: 'rgba(255,0,0,0.3)', lineWidth: 1 as LineWidth, lineStyle: 2 });
     rsiChart.addLineSeries({ color: 'rgba(0,255,0,0.3)', lineWidth: 1 as LineWidth, lineStyle: 2 });
 
+    // MACD chart
+    if (macdContainerRef) {
+      macdChart = createChart(macdContainerRef, {
+        ...baseChartOptions(90),
+        width: macdContainerRef.clientWidth,
+        rightPriceScale: { borderColor: 'rgba(255, 255, 255, 0.06)', scaleMargins: { top: 0.2, bottom: 0.2 } },
+      });
+      macdHistogramSeries = macdChart.addHistogramSeries({
+        color: 'rgba(0, 217, 165, 0.5)',
+        priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        priceScaleId: '',
+      });
+      macdChart.priceScale('').applyOptions({ scaleMargins: { top: 0.1, bottom: 0.1 } });
+      macdSeries = macdChart.addLineSeries({ color: '#3B82F6', lineWidth: 1 as LineWidth, title: 'MACD' });
+      macdSignalSeries = macdChart.addLineSeries({ color: '#FF5B79', lineWidth: 1 as LineWidth, title: 'Signal' });
+    }
+
     // Responsive resize
     const makeResizeHandler = (c: HTMLDivElement, api: IChartApi | null) => () => {
       if (api && c) {
@@ -236,21 +298,26 @@ function App() {
     const roSMA = new ResizeObserver(makeResizeHandler(smaContainerRef, smaChart));
     const roRSI = new ResizeObserver(makeResizeHandler(rsiContainerRef, rsiChart));
     const roVolume = new ResizeObserver(makeResizeHandler(volumeContainerRef!, volumeChart));
+    const roMACD = new ResizeObserver(makeResizeHandler(macdContainerRef!, macdChart));
 
     roMain.observe(chartContainerRef);
     roSMA.observe(smaContainerRef);
     roRSI.observe(rsiContainerRef);
+    if (volumeContainerRef) roVolume.observe(volumeContainerRef);
+    if (macdContainerRef) roMACD.observe(macdContainerRef);
 
     onCleanup(() => {
       roMain.disconnect();
       roSMA.disconnect();
       roRSI.disconnect();
       roVolume.disconnect();
+      roMACD.disconnect();
       ws?.close();
       chart?.remove();
       smaChart?.remove();
       rsiChart?.remove();
       volumeChart?.remove();
+      macdChart?.remove();
     });
 
     loadKlines();
@@ -337,11 +404,23 @@ function App() {
         volumeChart?.timeScale().scrollToPosition(chart!.timeScale().scrollPosition(), true);
       }
 
-      // SMA + RSI
+      // SMA + RSI + MACD
       const smaData = calcSMA(data.data, 20);
       const rsiData = calcRSI(data.data, 14);
       smaSeries?.setData(smaData);
       rsiSeries?.setData(rsiData);
+
+      // MACD
+      const macdData = calcMACD(data.data);
+      if (macdSeries && macdSignalSeries && macdHistogramSeries && macdData.length > 0) {
+        macdSeries.setData(macdData.map(d => ({ time: d.time, value: d.macd })));
+        macdSignalSeries.setData(macdData.map(d => ({ time: d.time, value: d.signal })));
+        macdHistogramSeries.setData(macdData.map(d => ({
+          time: d.time,
+          value: d.histogram,
+          color: d.histogram >= 0 ? 'rgba(0, 217, 165, 0.5)' : 'rgba(255, 91, 121, 0.5)',
+        })));
+      }
 
       // Stats
       const last = data.data[data.data.length - 1];
@@ -377,6 +456,18 @@ function App() {
           if (range) chart!.timeScale().setVisibleLogicalRange(range);
         });
       }
+
+      // Sync MACD with main chart
+      if (chart && macdChart) {
+        chart.timeScale().subscribeVisibleLogicalRangeChange((range: any) => {
+          if (range) macdChart!.timeScale().setVisibleLogicalRange(range);
+        });
+        macdChart.timeScale().subscribeVisibleLogicalRangeChange((range: any) => {
+          if (range) chart!.timeScale().setVisibleLogicalRange(range);
+        });
+      }
+
+      macdChart?.timeScale().fitContent();
 
       setLoading(false);
       connectWebSocket();
@@ -567,6 +658,14 @@ function App() {
           RSI14 (overbought &gt;70, oversold &lt;30)
         </div>
         <div ref={rsiContainerRef} style="height: 120px;" />
+      </div>
+
+      {/* MACD Chart */}
+      <div class="chart-wrapper glass-card" style="position: relative;">
+        <div style="padding: 8px 16px; font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-mono);">
+          MACD (12, 26, 9) — <span style="color:#3B82F6;">MACD</span> · <span style="color:#FF5B79;">Signal</span>
+        </div>
+        <div ref={macdContainerRef} style="height: 90px;" />
       </div>
 
       {/* Stats Bar */}

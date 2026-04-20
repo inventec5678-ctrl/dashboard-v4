@@ -20,6 +20,57 @@ def ts_to_taiwan(ts_ms: int) -> int:
     return int(ts_ms / 1000)
 
 
+def calcEMA(data: list, period: int) -> list:
+    """Calculate Exponential Moving Average over a list of numbers."""
+    if len(data) < period:
+        return []
+    multiplier = 2 / (period + 1)
+    ema = [sum(data[:period]) / period]  # first EMA = SMA
+    for i in range(period, len(data)):
+        ema.append((data[i] - ema[-1]) * multiplier + ema[-1])
+    return ema
+
+
+def calc_MACD(data: list, fast: int = 12, slow: int = 26, signal: int = 9) -> list:
+    """Calculate MACD indicator: {time, macd, signal, histogram} for each valid candle."""
+    if len(data) < slow:
+        return []
+    closes = [d["close"] for d in data]
+
+    # Full-length EMAs
+    ema_fast_full = calcEMA(closes, fast)      # len = len(closes) - (fast - 1)
+    ema_slow_full = calcEMA(closes, slow)      # len = len(closes) - (slow - 1)
+
+    # Fast EMA aligns to index fast-1, slow to slow-1
+    # MACD for index i (>= slow-1): ema_fast_full[i - (fast-1)] - ema_slow_full[i - (slow-1)]
+    macd_vals = []
+    for i in range(slow - 1, len(closes)):
+        f_idx = i - (fast - 1)
+        s_idx = i - (slow - 1)
+        if f_idx >= 0 and s_idx >= 0 and f_idx < len(ema_fast_full) and s_idx < len(ema_slow_full):
+            macd_vals.append(ema_fast_full[f_idx] - ema_slow_full[s_idx])
+        else:
+            macd_vals.append(0)
+
+    # Signal = 9-ema of macd_vals
+    sigEMA = calcEMA(macd_vals, signal)
+    # sigEMA aligns to index (slow-1) + (signal-1) in original data
+    result_start = (slow - 1) + (signal - 1)
+
+    result = []
+    for i, sv in enumerate(sigEMA):
+        data_idx = result_start + i
+        if data_idx < len(data):
+            m = macd_vals[i]
+            result.append({
+                "time": data[data_idx]["time"],
+                "macd": m,
+                "signal": sv,
+                "histogram": m - sv,
+            })
+    return result
+
+
 def resample_klines(data: list, rule: str) -> list:
     """Resample 日K data to 週K or 月K."""
     if not data:
@@ -282,6 +333,57 @@ async def get_klines(
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/api/macd")
+async def get_macd(
+    symbol: str = "BTCUSDT",
+    interval: str = "1d",
+    market: str = "CRYPTO",
+    years: int = 5,
+    fast: int = 12,
+    slow: int = 26,
+    signal: int = 9,
+):
+    """Return MACD indicator data for the given symbol/interval."""
+    # Re-use the same data-fetching logic from get_klines (no limit cap)
+    try:
+        if market == "CRYPTO":
+            if interval in ("1d", "1w", "1mo"):
+                daily = await get_binance_long_history(symbol, "1d", years=years)
+                raw = daily
+            else:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.get(
+                        "https://api.binance.com/api/v3/klines",
+                        params={"symbol": symbol, "interval": interval, "limit": 1000}
+                    )
+                    resp.raise_for_status()
+                    raw = resp.json()
+            data = [
+                {
+                    "time": ts_to_taiwan(k[0]),
+                    "open": float(k[1]),
+                    "high": float(k[2]),
+                    "low": float(k[3]),
+                    "close": float(k[4]),
+                    "volume": float(k[7]),
+                }
+                for k in raw
+            ]
+            if interval == "1w":
+                data = resample_klines(data, 'W')
+            elif interval == "1mo":
+                data = resample_klines(data, 'ME')
+        else:
+            # For non-crypto, fetch via get_klines then strip to close+time
+            klines_resp = await get_klines(symbol=symbol, interval=interval, limit=1000, market=market, years=years)
+            data = klines_resp.get("data", []) if hasattr(klines_resp, "get") else []
+    except Exception:
+        return {"symbol": symbol, "interval": interval, "data": []}
+
+    result = calc_MACD(data, fast=fast, slow=slow, signal=signal)
+    return {"symbol": symbol, "interval": interval, "data": result}
 
 
 # ========================================
