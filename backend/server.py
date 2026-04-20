@@ -16,8 +16,8 @@ UTC_OFFSET_SECS = 8 * 3600  # Taiwan is UTC+8
 
 
 def ts_to_taiwan(ts_ms: int) -> int:
-    """Convert Binance UTC ms timestamp → Taiwan time Unix seconds."""
-    return int(ts_ms / 1000) + UTC_OFFSET_SECS
+    """Convert Binance UTC ms timestamp → Unix seconds (UTC)."""
+    return int(ts_ms / 1000)
 
 
 def resample_klines(data: list, rule: str) -> list:
