@@ -152,9 +152,10 @@ function App() {
   const [symbols, setSymbols] = createSignal<SymbolInfo[]>([]);
   const [selectedSymbol, setSelectedSymbol] = createSignal('BTCUSDT');
 
-  // Timeframe selector
-  const [interval, setInterval] = createSignal('1d');
-  const INTERVALS = [
+  // Timeframe selector — dynamic per market
+  const [interval, setInterval] = createSignal<string>('1d');
+
+  const CRYPTO_INTERVALS = [
     { label: '1m', value: '1m' },
     { label: '5m', value: '5m' },
     { label: '15m', value: '15m' },
@@ -164,6 +165,28 @@ function App() {
     { label: '1W', value: '1w' },
     { label: '1M', value: '1mo' },
   ] as const;
+
+  const US_INTERVALS = [
+    { label: '1H', value: '1h' },
+    { label: '4H', value: '4h' },
+    { label: '1D', value: '1d' },
+    { label: '1W', value: '1w' },
+    { label: '1M', value: '1mo' },
+  ] as const;
+
+  const TWSE_INTERVALS = [
+    { label: '1D', value: '1d' },
+    { label: '1W', value: '1w' },
+    { label: '1M', value: '1mo' },
+  ] as const;
+
+  const availableIntervals = () => {
+    switch (market()) {
+      case 'US':    return US_INTERVALS;
+      case 'TWSE':  return TWSE_INTERVALS;
+      default:      return CRYPTO_INTERVALS;
+    }
+  };
 
   // Price animation state
   const [priceFlashClass, setPriceFlashClass] = createSignal('');
@@ -646,7 +669,11 @@ function App() {
     const m = market();
     const s = selectedSymbol();
     const tf = interval();
-    if (symbols().length > 0) {
+    // Reset to default interval when switching to a market that doesn't support current tf
+    const valid = availableIntervals().map(i => i.value);
+    if (!valid.includes(tf)) {
+      setInterval(valid[0]);
+    } else if (symbols().length > 0) {
       loadKlines();
     }
   });
@@ -669,7 +696,7 @@ function App() {
 
       {/* ====== Timeframe Tabs ====== */}
       <div class="interval-tabs">
-        <For each={INTERVALS}>
+        <For each={availableIntervals()}>
           {(int) => (
             <button
               class={`interval-btn ${interval() === int.value ? 'active' : ''}`}
