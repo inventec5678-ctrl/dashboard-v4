@@ -109,21 +109,21 @@ function formatVolume(v: number): string {
 
 function App() {
   let chartContainerRef: HTMLDivElement | undefined;
-  let smaContainerRef: HTMLDivElement | undefined;
+  
   let rsiContainerRef: HTMLDivElement | undefined;
   let volumeContainerRef: HTMLDivElement | undefined;
   let macdContainerRef: HTMLDivElement | undefined;
   let obContainerRef: HTMLDivElement | undefined;
 
   let chart: IChartApi | null = null;
-  let smaChart: IChartApi | null = null;
   let rsiChart: IChartApi | null = null;
   let volumeChart: IChartApi | null = null;
   let macdChart: IChartApi | null = null;
   let obChart: IChartApi | null = null;
   let candlestickSeries: ISeriesApi<'Candlestick'> | null = null;
-  let smaSeries: ISeriesApi<'Line'> | null = null;
   let rsiSeries: ISeriesApi<'Line'> | null = null;
+  let rsiOverboughtLine: ISeriesApi<'Line'> | null = null;
+  let rsiOversoldLine: ISeriesApi<'Line'> | null = null;
   let volumeSeries: ISeriesApi<'Histogram'> | null = null;
   let macdSeries: ISeriesApi<'Line'> | null = null;
   let macdSignalSeries: ISeriesApi<'Line'> | null = null;
@@ -136,6 +136,10 @@ function App() {
 
   const [loading, setLoading] = createSignal(true);
   const [error, setError] = createSignal<string | null>(null);
+  // RSI threshold signals (exportable)
+  const [rsiOverbought, setRsiOverbought] = createSignal(70);
+  const [rsiOversold, setRsiOversold] = createSignal(30);
+  const [rsiLineColor, setRsiLineColor] = createSignal('#9B59B6');
   const [intervalApproximated, setIntervalApproximated] = createSignal(false);
   const [lastPrice, setLastPrice] = createSignal<number>(0);
   const [priceChange, setPriceChange] = createSignal<number>(0);
@@ -252,7 +256,7 @@ function App() {
   });
 
   onMount(() => {
-    if (!chartContainerRef || !smaContainerRef || !rsiContainerRef) return;
+    if (!chartContainerRef || !rsiContainerRef) return;
 
     // Main candlestick chart
     chart = createChart(chartContainerRef, {
@@ -286,14 +290,6 @@ function App() {
       });
     }
 
-    // SMA chart
-    smaChart = createChart(smaContainerRef, {
-      ...baseChartOptions(120),
-      width: smaContainerRef.clientWidth,
-      rightPriceScale: { borderColor: 'rgba(255, 255, 255, 0.06)', scaleMargins: { top: 0.2, bottom: 0.2 } },
-    });
-    smaSeries = smaChart.addLineSeries({ color: '#FFA500', lineWidth: 1 as LineWidth, title: 'SMA20' });
-
     // RSI chart
     rsiChart = createChart(rsiContainerRef, {
       ...baseChartOptions(120),
@@ -301,9 +297,9 @@ function App() {
       rightPriceScale: { borderColor: 'rgba(255, 255, 255, 0.06)', scaleMargins: { top: 0.2, bottom: 0.2 } },
     });
     rsiSeries = rsiChart.addLineSeries({ color: '#9B59B6', lineWidth: 1 as LineWidth, title: 'RSI14' });
-    // RSI reference lines at 70/30
-    rsiChart.addLineSeries({ color: 'rgba(255,0,0,0.3)', lineWidth: 1 as LineWidth, lineStyle: 2 });
-    rsiChart.addLineSeries({ color: 'rgba(0,255,0,0.3)', lineWidth: 1 as LineWidth, lineStyle: 2 });
+    // RSI reference lines (dynamic thresholds)
+    rsiOverboughtLine = rsiChart.addLineSeries({ color: 'rgba(255,0,0,0.3)', lineWidth: 1 as LineWidth, lineStyle: 2, title: 'Overbought' });
+    rsiOversoldLine = rsiChart.addLineSeries({ color: 'rgba(0,255,0,0.3)', lineWidth: 1 as LineWidth, lineStyle: 2, title: 'Oversold' });
 
     // MACD chart
     if (macdContainerRef) {
@@ -339,14 +335,12 @@ function App() {
     };
 
     const roMain = new ResizeObserver(makeResizeHandler(chartContainerRef, chart));
-    const roSMA = new ResizeObserver(makeResizeHandler(smaContainerRef, smaChart));
     const roRSI = new ResizeObserver(makeResizeHandler(rsiContainerRef, rsiChart));
     const roVolume = new ResizeObserver(makeResizeHandler(volumeContainerRef!, volumeChart));
     const roMACD = new ResizeObserver(makeResizeHandler(macdContainerRef!, macdChart));
     const roOB = new ResizeObserver(makeResizeHandler(obContainerRef!, obChart));
 
     roMain.observe(chartContainerRef);
-    roSMA.observe(smaContainerRef);
     roRSI.observe(rsiContainerRef);
     if (volumeContainerRef) roVolume.observe(volumeContainerRef);
     if (macdContainerRef) roMACD.observe(macdContainerRef);
@@ -354,7 +348,6 @@ function App() {
 
     onCleanup(() => {
       roMain.disconnect();
-      roSMA.disconnect();
       roRSI.disconnect();
       roVolume.disconnect();
       roMACD.disconnect();
@@ -362,7 +355,6 @@ function App() {
       ws?.close();
       if (obIntervalId) clearInterval(obIntervalId);
       chart?.remove();
-      smaChart?.remove();
       rsiChart?.remove();
       volumeChart?.remove();
       macdChart?.remove();
@@ -550,10 +542,18 @@ function App() {
       }
 
       // SMA + RSI + MACD (use same uniqueBars dedup logic)
-      const smaData = calcSMA(uniqueBars, 20);
       const rsiData = calcRSI(uniqueBars, 14);
-      smaSeries?.setData(smaData);
       rsiSeries?.setData(rsiData);
+      // Dynamic RSI threshold reference lines
+      const rsiOB = rsiOverbought();
+      const rsiOS = rsiOversold();
+      if (rsiData.length > 0 && rsiOverboughtLine && rsiOversoldLine) {
+        const times = rsiData.map(d => d.time);
+        const obData = times.map(t => ({ time: t, value: rsiOB }));
+        const osData = times.map(t => ({ time: t, value: rsiOS }));
+        rsiOverboughtLine.setData(obData);
+        rsiOversoldLine.setData(osData);
+      }
 
       // MACD
       const macdData = calcMACD(uniqueBars);
@@ -568,24 +568,22 @@ function App() {
       }
 
       // Volume Anomaly markers (z-score > 2 on main chart)
-      try {
-        const vaResp = await fetch(`/api/anomaly_volume?symbol=${selectedSymbol()}&interval=${interval()}&market=${market()}&years=5`);
-        if (vaResp.ok) {
-          const vaData = await vaResp.json();
-          const anomalies = vaData.anomalies || [];
-          for (const a of anomalies) {
-            if (chart) {
-              chart.addVerticalLine({
-                time: a.time as Time,
-                color: 'rgba(255, 91, 121, 0.8)',
-                lineWidth: 2 as LineWidth,
-                lineStyle: 0,
-                axisLabelVisible: false,
-              });
-            }
+      if (candlestickSeries) {
+        try {
+          const vaResp = await fetch(`/api/anomaly_volume?symbol=${selectedSymbol()}&interval=${interval()}&market=${market()}&years=5`);
+          if (vaResp.ok) {
+            const vaData = await vaResp.json();
+            const anomalies = vaData.anomalies || [];
+            candlestickSeries.setMarkers(anomalies.map((a: any) => ({
+              time: a.time as Time,
+              position: 'aboveBar',
+              color: 'rgba(0, 217, 165, 0.8)',
+              shape: 'arrowUp',
+              size: 1,
+            })));
           }
-        }
-      } catch (_e) { /* silently skip */ }
+        } catch (_e) { /* silently skip */ }
+      }
 
       // Order Book anomaly fetch + chart
       try {
@@ -661,7 +659,6 @@ function App() {
       const isMonthly = interval() === '1mo' && data.data.length > 24;
       if (!isMonthly) {
         chart?.timeScale().fitContent();
-        smaChart?.timeScale().fitContent();
         rsiChart?.timeScale().fitContent();
         volumeChart?.timeScale().fitContent();
       }
@@ -872,18 +869,47 @@ function App() {
         </Show>
       </div>
 
-      {/* SMA Chart */}
-      <div class="chart-wrapper glass-card" style="position: relative;">
-        <div style="padding: 8px 16px; font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-mono);">
-          SMA20
-        </div>
-        <div ref={smaContainerRef} style="height: 120px;" />
-      </div>
+      
 
       {/* RSI Chart */}
       <div class="chart-wrapper glass-card" style="position: relative;">
-        <div style="padding: 8px 16px; font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-mono);">
-          RSI14 (overbought &gt;70, oversold &lt;30)
+        <div style="display: flex; align-items: center; gap: 12px; padding: 8px 16px; flex-wrap: wrap;">
+          <span style="font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-mono);">RSI14</span>
+          <div style="display: flex; align-items: center; gap: 6px; font-size: 0.7rem; font-family: var(--font-mono);">
+            <label style="color: var(--accent-green);">Oversold &lt;
+              <input
+                type="number"
+                value={rsiOversold()}
+                onInput={e => {
+                  const v = parseInt(e.target.value);
+                  if (!isNaN(v) && v >= 0 && v <= 100) {
+                    setRsiOversold(v);
+                    if (v >= rsiOverbought()) setRsiOversold(v - 5);
+                  }
+                }}
+                style="width: 48px; background: var(--bg-card); border: 1px solid rgba(255,255,255,0.1); color: var(--accent-green); border-radius: 4px; padding: 2px 4px; font-family: var(--font-mono); font-size: 0.7rem;"
+              />
+            </label>
+            <label style="color: var(--accent-red);">Overbought &gt;
+              <input
+                type="number"
+                value={rsiOverbought()}
+                onInput={e => {
+                  const v = parseInt(e.target.value);
+                  if (!isNaN(v) && v >= 0 && v <= 100) {
+                    setRsiOverbought(v);
+                    if (v <= rsiOversold()) setRsiOverbought(v + 5);
+                  }
+                }}
+                style="width: 48px; background: var(--bg-card); border: 1px solid rgba(255,255,255,0.1); color: var(--accent-red); border-radius: 4px; padding: 2px 4px; font-family: var(--font-mono); font-size: 0.7rem;"
+              />
+            </label>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px; font-size: 0.65rem; font-family: var(--font-mono);">
+            <span style="color: #9B59B6;">■ Neutral</span>
+            <span style="color: #00D9A5;">■ RSI &lt; {rsiOversold()}</span>
+            <span style="color: #FF5B79;">■ RSI &gt; {rsiOverbought()}</span>
+          </div>
         </div>
         <div ref={rsiContainerRef} style="height: 120px;" />
       </div>
