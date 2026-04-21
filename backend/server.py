@@ -841,10 +841,8 @@ async def get_symbols(market: str = "CRYPTO"):
             "data": [
                 {"symbol": "BTCUSDT", "display": "BTC", "name": "Bitcoin"},
                 {"symbol": "ETHUSDT", "display": "ETH", "name": "Ethereum"},
-                {"symbol": "BNBUSDT", "display": "BNB", "name": "BNB"},
-                {"symbol": "SOLUSDT", "display": "SOL", "name": "Solana"},
                 {"symbol": "XRPUSDT", "display": "XRP", "name": "Ripple"},
-                {"symbol": "ADAUSDT", "display": "ADA", "name": "Cardano"},
+                {"symbol": "DOGEUSDT", "display": "DOGE", "name": "Dogecoin"},
             ]
         }
     elif market == "TWSE":
