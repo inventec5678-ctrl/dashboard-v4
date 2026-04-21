@@ -496,17 +496,6 @@ function App() {
       if (!data.data || data.data.length === 0) throw new Error('No data');
 
       setIntervalApproximated(data.interval_approximated ?? false);
-      openPriceRef = uniqueBars[0].open;
-
-      const formattedData = data.data.map((k) => ({
-        time: k.time as Time,
-        open: k.open,
-        high: k.high,
-        low: k.low,
-        close: k.close,
-      }));
-
-      lastKlineTime = data.data[data.data.length - 1].time;
 
       // Deduplicate data.data by time (handles duplicate API timestamps)
       const seenTimes = new Set<number>();
@@ -515,6 +504,17 @@ function App() {
         seenTimes.add(b.time);
         return true;
       });
+
+      const formattedData = uniqueBars.map((k) => ({
+        time: k.time as Time,
+        open: k.open,
+        high: k.high,
+        low: k.low,
+        close: k.close,
+      }));
+
+      lastKlineTime = uniqueBars[uniqueBars.length - 1].time;
+      openPriceRef = uniqueBars[0].open;
 
       // Deduplicate by time so setData never gets duplicate timestamps
       const seen = new Set<number>();
