@@ -287,11 +287,13 @@ async def get_klines(
                 # Get daily data and resample
                 df = ticker.history(period="5y", interval="1d")
                 df = df.reset_index()
-                df['time'] = pd.to_datetime(df['Datetime'], unit='s', utc=True).dt.tz_convert('Asia/Taipei')
+                ts_col = 'Datetime' if 'Datetime' in df.columns else 'Date'
+                df['time'] = pd.to_datetime(df[ts_col]).dt.tz_convert('Asia/Taipei')
                 df.set_index('time', inplace=True)
                 freq = 'W' if interval == '1w' else 'ME'
                 resampled = df.resample(freq).agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
-                resampled['time'] = resampled.index.to_numpy().astype('int64').tolist()
+                # datetime64[s] → seconds directly
+                resampled['time'] = resampled.index.astype('int64').tolist()
                 data = [
                     {
                         "time": int(row['time']),
@@ -331,7 +333,7 @@ async def get_klines(
                     "close": float(row['Close']),
                     "volume": float(row['Volume']),
                 }
-                for _, row in df.iter_rows()
+                for _, row in df.iterrows()
                 if not df.empty
             ]
 
