@@ -622,11 +622,11 @@ function App() {
 
       // Stats
       const last = data.data[data.data.length - 1];
-      const first = data.data[0];
+      const prev = data.data[data.data.length - 2];  // previous candle close = "yesterday"
       const lastClose = last.close;
-      const firstOpen = first.open;
-      const change = lastClose - firstOpen;
-      const changePct = (change / firstOpen) * 100;
+      const prevClose = prev.close;
+      const change = lastClose - prevClose;
+      const changePct = prevClose > 0 ? (change / prevClose) * 100 : 0;
 
       setLastPrice(lastClose);
       setPriceChange(change);
