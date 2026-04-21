@@ -795,6 +795,68 @@ async def get_symbols(market: str = "CRYPTO"):
     return {"data": []}
 
 
+from backtest_engine import run_backtest, STRATEGIES
+
+
+@app.post("/api/backtest")
+async def backtest(
+    symbol: str = "BTCUSDT",
+    interval: str = "1d",
+    market: str = "CRYPTO",
+    strategy: str = "sma_crossover",
+    params: str = "{}",
+    years: int = 5,
+):
+    """Run backtest for a given symbol/interval/strategy."""
+    import json
+
+    try:
+        p = json.loads(params) if params else {}
+    except Exception:
+        p = {}
+
+    try:
+        # Re-use get_klines data by calling it directly (shared function)
+        klines_resp = await get_klines(
+            symbol=symbol,
+            interval=interval,
+            limit=1000,
+            market=market,
+            years=years,
+        )
+
+        # get_klines may return a Response object or a dict
+        if hasattr(klines_resp, "body"):
+            import json as _json
+            body = _json.loads(klines_resp.body)
+            data = body.get("data", [])
+        else:
+            data = klines_resp.get("data", []) if isinstance(klines_resp, dict) else []
+
+        if not data:
+            return {"error": "No data available for backtest", "data": []}
+
+        result = run_backtest(data, strategy, p)
+        return result
+
+    except Exception as e:
+        import sys, traceback
+        traceback.print_exc(file=sys.stderr)
+        return {"error": str(e)}
+
+
+@app.get("/api/backtest/strategies")
+async def get_backtest_strategies():
+    """Return available strategies and their default parameters."""
+    return {
+        s: {
+            "label": STRATEGIES[s]["label"],
+            "default_params": STRATEGIES[s]["default_params"],
+        }
+        for s in STRATEGIES
+    }
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=5006)

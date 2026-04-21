@@ -1,5 +1,6 @@
 import { createSignal, createEffect, onMount, onCleanup, Show, For } from 'solid-js';
 import { createChart, ColorType, CrosshairMode, IChartApi, ISeriesApi, LineWidth, Time, VerticalLine } from 'lightweight-charts';
+import BacktestPanel from './BacktestPanel';
 
 interface MACDData { time: Time; macd: number; signal: number; histogram: number; }
 
@@ -938,6 +939,15 @@ function App() {
           <span class="stat-value mono">{interval().toUpperCase()}</span>
         </div>
       </div>
+
+      {/* Backtest Panel */}
+      <BacktestPanel
+        selectedSymbol={selectedSymbol}
+        interval={interval}
+        market={market}
+        chartRef={() => chart}
+        getAllMarkers={() => []}
+      />
     </div>
   );
 }
