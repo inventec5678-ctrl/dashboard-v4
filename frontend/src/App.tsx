@@ -495,7 +495,7 @@ function App() {
       if (!data.data || data.data.length === 0) throw new Error('No data');
 
       setIntervalApproximated(data.interval_approximated ?? false);
-      openPriceRef = data.data[0].open;
+      openPriceRef = uniqueBars[0].open;
 
       const formattedData = data.data.map((k) => ({
         time: k.time as Time,
@@ -507,22 +507,39 @@ function App() {
 
       lastKlineTime = data.data[data.data.length - 1].time;
 
-      candlestickSeries?.setData(formattedData);
+      // Deduplicate data.data by time (handles duplicate API timestamps)
+      const seenTimes = new Set<number>();
+      const uniqueBars = data.data.filter(b => {
+        if (seenTimes.has(b.time)) return false;
+        seenTimes.add(b.time);
+        return true;
+      });
+
+      // Deduplicate by time so setData never gets duplicate timestamps
+      const seen = new Set<number>();
+      const uniqueData = formattedData.filter(d => {
+        const t = d.time as number;
+        if (seen.has(t)) return false;
+        seen.add(t);
+        return true;
+      });
+
+      candlestickSeries?.setData(uniqueData);
 
       // For monthly (1M) data with many years, default to showing last 24 bars
       // so candles render at readable width instead of 1-2px slivers
       const barsToShow = interval() === '1mo' ? 24 : undefined;
-      if (barsToShow && formattedData.length > barsToShow) {
-        const lastTime = formattedData[formattedData.length - 1].time as number;
-        const firstTime = formattedData[formattedData.length - barsToShow].time as number;
+      if (barsToShow && uniqueData.length > barsToShow) {
+        const lastTime = uniqueData[uniqueData.length - 1].time as number;
+        const firstTime = uniqueData[uniqueData.length - barsToShow].time as number;
         chart?.timeScale().setVisibleRange({ from: firstTime, to: lastTime + 86400 * 31 });
       } else {
         chart?.timeScale().fitContent();
       }
 
       // Volume
-      if (volumeSeries && data.data) {
-        const volumeData = data.data.map((k) => ({
+      if (volumeSeries && uniqueBars) {
+        const volumeData = uniqueBars.map((k) => ({
           time: k.time as Time,
           value: k.volume || 0,
           color: k.close >= k.open ? 'rgba(0, 217, 165, 0.5)' : 'rgba(255, 91, 121, 0.5)',
@@ -531,14 +548,14 @@ function App() {
         volumeChart?.timeScale().scrollToPosition(chart!.timeScale().scrollPosition(), true);
       }
 
-      // SMA + RSI + MACD
-      const smaData = calcSMA(data.data, 20);
-      const rsiData = calcRSI(data.data, 14);
+      // SMA + RSI + MACD (use same uniqueBars dedup logic)
+      const smaData = calcSMA(uniqueBars, 20);
+      const rsiData = calcRSI(uniqueBars, 14);
       smaSeries?.setData(smaData);
       rsiSeries?.setData(rsiData);
 
       // MACD
-      const macdData = calcMACD(data.data);
+      const macdData = calcMACD(uniqueBars);
       if (macdSeries && macdSignalSeries && macdHistogramSeries && macdData.length > 0) {
         macdSeries.setData(macdData.map(d => ({ time: d.time, value: d.macd })));
         macdSignalSeries.setData(macdData.map(d => ({ time: d.time, value: d.signal })));
@@ -620,10 +637,8 @@ function App() {
       } catch (_e) { /* silently skip */ }
 
       // Stats
-
-      // Stats
-      const last = data.data[data.data.length - 1];
-      const prev = data.data[data.data.length - 2];  // previous candle close = "yesterday"
+      const last = uniqueBars[uniqueBars.length - 1];
+      const prev = uniqueBars[uniqueBars.length - 2];  // previous candle close = "yesterday"
       const lastClose = last.close;
       const prevClose = prev.close;
       const change = lastClose - prevClose;
@@ -634,8 +649,8 @@ function App() {
       setPriceChangePct(changePct);
       setSymbol(data.symbol);
 
-      const highs = data.data.map((k) => k.high);
-      const lows = data.data.map((k) => k.low);
+      const highs = uniqueBars.map((k) => k.high);
+      const lows = uniqueBars.map((k) => k.low);
       setHigh24h(Math.max(...highs));
       setLow24h(Math.min(...lows));
 
