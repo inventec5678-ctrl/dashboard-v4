@@ -271,56 +271,71 @@ async def get_klines(
                 headers={"X-Data-Source": "mock"}
             )
 
-    # TWSE → FinMind API
+    # TWSE → Yahoo Finance (yfinance)
     elif market == "TWSE":
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                start_date = (datetime.now() - timedelta(days=years * 365)).strftime("%Y-%m-%d")
-                end_date = datetime.now().strftime("%Y-%m-%d")
-                resp = await client.get(
-                    "https://api.finmindtrade.com/api/v4/data",
-                    params={
-                        "dataset": "TaiwanStockPrice",
-                        "data_id": symbol,
-                        "start_date": start_date,
-                        "end_date": end_date,
-                    }
-                )
-                resp.raise_for_status()
-                raw = resp.json()
-                raw_data = raw.get("data", [])
-                if not raw_data:
-                    raise ValueError("No TWSE data")
-                # Sort by date ascending
-                sorted_data = sorted(raw_data, key=lambda x: x.get("date", ""))
-                # Convert all to daily klines
-                full_data = [
+            import yfinance as yf
+            sym_yf = symbol + ".TW"  # e.g. "2330.TW"
+            ticker = yf.Ticker(sym_yf)
+
+            # Determine yfinance interval based on requested interval
+            if interval in ("1h", "4h", "1d"):
+                yf_intv = interval
+                period_map = {"1h": "5d", "4h": "5d", "1d": "5y"}
+                df = ticker.history(period=period_map.get(interval, "5y"), interval=yf_intv)
+            elif interval in ("1w", "1mo"):
+                # Get daily data and resample
+                df = ticker.history(period="5y", interval="1d")
+                df = df.reset_index()
+                df['time'] = pd.to_datetime(df['Datetime'], unit='s', utc=True).dt.tz_convert('Asia/Taipei')
+                df.set_index('time', inplace=True)
+                freq = 'W' if interval == '1w' else 'ME'
+                resampled = df.resample(freq).agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
+                resampled['time'] = resampled.index.to_numpy().astype('int64').tolist()
+                data = [
                     {
-                        "time": int(datetime.strptime(d["date"], "%Y-%m-%d").timestamp()),
-                        "open": float(d.get("open", 0) or 0),
-                        "high": float(d.get("max", 0) or 0),
-                        "low": float(d.get("min", 0) or 0),
-                        "close": float(d.get("close", 0) or 0),
-                        "volume": float(d.get("Trading_Volume", 0) or 0),
+                        "time": int(row['time']),
+                        "open": float(row['Open']),
+                        "high": float(row['High']),
+                        "low": float(row['Low']),
+                        "close": float(row['Close']),
+                        "volume": float(row['Volume']),
                     }
-                    for d in sorted_data
+                    for _, row in resampled.iterrows()
                 ]
-                interval_approximated = interval in ("1h", "4h")
-                if interval == "1d":
-                    data = full_data[-limit:]
-                elif interval == "1w":
-                    data = resample_klines(full_data, 'W')
-                elif interval == "1mo":
-                    data = resample_klines(full_data, 'ME')
-                else:
-                    # 1h/4h: FinMind has no intraday → return daily with flag
-                    data = full_data[-limit:]
-                return {
-                    "symbol": symbol,
-                    "interval": interval,
-                    "data": data,
-                    "interval_approximated": interval_approximated,
+                return { "symbol": symbol, "interval": interval, "data": data, "interval_approximated": False }
+            else:
+                df = ticker.history(period="5y", interval="1d")
+
+            df = df.reset_index()
+
+            # Handle Datetime column (yfinance returns Datetime for non-daily, Date for daily)
+            if 'Datetime' in df.columns:
+                ts_col = 'Datetime'
+            else:
+                ts_col = 'Date'
+
+            # Convert timestamp to Unix seconds (UTC)
+            def to_unix_ts(dt_val):
+                try:
+                    return int(pd.to_datetime(dt_val).timestamp())
+                except:
+                    return 0
+
+            data = [
+                {
+                    "time": to_unix_ts(row[ts_col]),
+                    "open": float(row['Open']),
+                    "high": float(row['High']),
+                    "low": float(row['Low']),
+                    "close": float(row['Close']),
+                    "volume": float(row['Volume']),
                 }
+                for _, row in df.iter_rows()
+                if not df.empty
+            ]
+
+            return { "symbol": symbol, "interval": interval, "data": data, "interval_approximated": False }
         except Exception as e:
             import sys, traceback
             traceback.print_exc(file=sys.stderr)
