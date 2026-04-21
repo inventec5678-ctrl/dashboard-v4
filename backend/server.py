@@ -10,6 +10,8 @@ from typing import Optional, Set
 import argparse
 import pytz
 import pandas as pd
+import requests
+import time
 
 TW_TZ = pytz.timezone("Asia/Taipei")
 UTC_OFFSET_SECS = 8 * 3600  # Taiwan is UTC+8
@@ -103,6 +105,37 @@ def detect_volume_anomalies(data: list, window: int = 20, z_threshold: float = 2
             })
 
     return anomalies
+
+
+def roc_to_utc(roc_str: str) -> int:
+    """Convert ROC date string like '113/04/21' → Unix timestamp (UTC midnight)."""
+    parts = roc_str.split('/')
+    western_year = int(parts[0]) + 1911
+    month = int(parts[1])
+    day = int(parts[2])
+    dt = datetime(western_year, month, day)
+    return int(dt.timestamp())  # UTC midnight
+
+
+def get_twse_daily_for_month(stock_no: str, year: int, month: int) -> list:
+    """Fetch one month of daily data from TWSE API."""
+    date_str = f'{year}{month:02d}01'
+    # Use STOCK_DAY (single stock daily), not STOCK_DAY_ALL (all stocks summary)
+    url = (f'https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY'
+           f'?date={date_str}&stockNo={stock_no}&response=json')
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        'Referer': 'https://www.twse.com.tw/SECURITIES/STOCK_DAY?STOCK_NO=' + stock_no,
+        'Accept': 'application/json, text/javascript, */*',
+    }
+    resp = requests.get(url, headers=headers, timeout=15, verify=False)
+    if resp.status_code != 200:
+        return []
+    data = resp.json()
+    # Return raw rows; empty list or stat != 'OK' means no data
+    if data.get('stat') != 'OK':
+        return []
+    return data.get('data', [])
 
 
 def resample_klines(data: list, rule: str) -> list:
@@ -271,20 +304,79 @@ async def get_klines(
                 headers={"X-Data-Source": "mock"}
             )
 
-    # TWSE → Yahoo Finance (yfinance)
+    # TWSE → TWSE API (month-by-month), fallback to yfinance
     elif market == "TWSE":
         try:
+            # Only do month-by-month fetch for 1d with years >= 1
+            if interval == "1d" and years >= 1:
+                now = datetime.now()
+                all_rows = []
+
+                # Start from 2020-01 or up to 5 years back, whichever is more recent
+                start_year = max(2020, now.year - years)
+                cur_year = start_year
+                cur_month = 1
+                months_collected = 0
+                max_months = min(years * 12, 60)
+
+                while months_collected < max_months:
+                    raw_rows = get_twse_daily_for_month(symbol, cur_year, cur_month)
+                    for row in raw_rows:
+                        # TWSE data format: [日期, 成交股數, 成交金額, 開盤價, 最高價, 最低價, 收盤價, 漲跌價, 振福]
+                        # Row is like ['113/04/01', '75,432,111', '4,234,567,890', '501.00', '505.00', '498.00', '502.00', '+1.00', '1.32']
+                        if len(row) >= 7:
+                            try:
+                                date_str = row[0]
+                                open_p = float(row[3].replace(',', ''))
+                                high_p = float(row[4].replace(',', ''))
+                                low_p = float(row[5].replace(',', ''))
+                                close_p = float(row[6].replace(',', ''))
+                                # 成交股數 → volume (shares, not TWD)
+                                vol_str = row[1].replace(',', '')
+                                volume = float(vol_str) if vol_str else 0
+                                all_rows.append({
+                                    "time": roc_to_utc(date_str),
+                                    "open": open_p,
+                                    "high": high_p,
+                                    "low": low_p,
+                                    "close": close_p,
+                                    "volume": volume,
+                                })
+                            except (ValueError, IndexError):
+                                pass
+
+                    months_collected += 1
+                    cur_month += 1
+                    if cur_month > 12:
+                        cur_month = 1
+                        cur_year += 1
+                    if cur_year > now.year or (cur_year == now.year and cur_month > now.month):
+                        break
+
+                    time.sleep(0.3)  # rate limit
+
+                # Sort by time ascending
+                all_rows.sort(key=lambda x: x["time"])
+                data = all_rows[-limit:] if len(all_rows) > limit else all_rows
+
+                return {
+                    "symbol": symbol,
+                    "interval": interval,
+                    "data": data,
+                    "interval_approximated": False,
+                    "data_source": "twse_api",
+                }
+
+            # For 1h/4h/1d without multi-year, or 1w/1mo: use yfinance
             import yfinance as yf
-            sym_yf = symbol + ".TW"  # e.g. "2330.TW"
+            sym_yf = symbol + ".TW"
             ticker = yf.Ticker(sym_yf)
 
-            # Determine yfinance interval based on requested interval
             if interval in ("1h", "4h", "1d"):
                 yf_intv = interval
                 period_map = {"1h": "5d", "4h": "5d", "1d": "5y"}
                 df = ticker.history(period=period_map.get(interval, "5y"), interval=yf_intv)
             elif interval in ("1w", "1mo"):
-                # Get daily data and resample
                 df = ticker.history(period="5y", interval="1d")
                 df = df.reset_index()
                 ts_col = 'Datetime' if 'Datetime' in df.columns else 'Date'
@@ -292,7 +384,6 @@ async def get_klines(
                 df.set_index('time', inplace=True)
                 freq = 'W' if interval == '1w' else 'ME'
                 resampled = df.resample(freq).agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
-                # datetime64[s] → seconds directly
                 resampled['time'] = resampled.index.astype('int64').tolist()
                 data = [
                     {
@@ -305,19 +396,16 @@ async def get_klines(
                     }
                     for _, row in resampled.iterrows()
                 ]
-                return { "symbol": symbol, "interval": interval, "data": data, "interval_approximated": False }
+                return { "symbol": symbol, "interval": interval, "data": data, "interval_approximated": False, "data_source": "yfinance" }
             else:
                 df = ticker.history(period="5y", interval="1d")
 
             df = df.reset_index()
-
-            # Handle Datetime column (yfinance returns Datetime for non-daily, Date for daily)
             if 'Datetime' in df.columns:
                 ts_col = 'Datetime'
             else:
                 ts_col = 'Date'
 
-            # Convert timestamp to Unix seconds (UTC)
             def to_unix_ts(dt_val):
                 try:
                     return int(pd.to_datetime(dt_val).timestamp())
@@ -337,7 +425,7 @@ async def get_klines(
                 if not df.empty
             ]
 
-            return { "symbol": symbol, "interval": interval, "data": data, "interval_approximated": False }
+            return { "symbol": symbol, "interval": interval, "data": data, "interval_approximated": False, "data_source": "yfinance" }
         except Exception as e:
             import sys, traceback
             traceback.print_exc(file=sys.stderr)
