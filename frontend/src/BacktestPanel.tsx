@@ -151,9 +151,9 @@ function BacktestPanel(props: BacktestPanelProps) {
 
     try {
       const body = new URLSearchParams({
-        symbol: props.selectedSymbolVal(),
-        interval: props.intervalVal(),
-        market: props.marketVal(),
+        symbol: props.selectedSymbol(),
+        interval: props.interval(),
+        market: props.market(),
         strategy: strategy(),
         params: JSON.stringify(params()),
       });

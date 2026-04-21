@@ -1,11 +1,9 @@
 import { createSignal, createEffect, onMount, onCleanup, Show, For } from 'solid-js';
-import { createChart, ColorType, CrosshairMode, IChartApi, ISeriesApi, LineWidth, Time, VerticalLine } from 'lightweight-charts';
+import { createChart, ColorType, CrosshairMode, IChartApi, ISeriesApi, LineWidth, Time } from 'lightweight-charts';
 import BacktestPanel from './BacktestPanel';
 import { ForeignPanel } from './ForeignPanel';
 
 interface MACDData { time: Time; macd: number; signal: number; histogram: number; }
-
-function calcMACD(data: KLine[]): MACDData[] {
 
 function calcVolumeAnomalies(data: KLine[], window: number = 20, zThreshold: number = 2.0): { time: number; volume: number; zScore: number; avgVolume: number }[] {
   if (data.length < window) return [];
@@ -21,6 +19,8 @@ function calcVolumeAnomalies(data: KLine[], window: number = 20, zThreshold: num
   }
   return anomalies;
 }
+
+function calcMACD(data: KLine[]): MACDData[] {
   const closes = data.map(d => d.close);
   const period = 14;
   if (closes.length < 27) return [];
@@ -87,17 +87,7 @@ interface SymbolInfo {
   name: string;
 }
 
-// --- Indicator helpers ---
-function calcSMA(data: KLine[], period: number = 20): { time: Time; value: number }[] {
-  const closes = data.map(d => d.close);
-  const result: { time: Time; value: number }[] = [];
-  for (let i = period - 1; i < closes.length; i++) {
-    const avg = closes.slice(i - period + 1, i + 1).reduce((a, b) => a + b, 0) / period;
-    result.push({ time: data[i].time as Time, value: avg });
-  }
-  return result;
-}
-
+// RSI helper
 function calcRSI(data: KLine[], period: number = 14): { time: Time; value: number }[] {
   const closes = data.map(d => d.close);
   const result: { time: Time; value: number }[] = [];
@@ -390,59 +380,44 @@ function App() {
         const ob = await obResp.json();
         setObAnomalies(ob);
 
-        if (obChart) {
-          // Clear existing series
-          obChart.remove();
+        if (obChart) obChart.remove();
 
-          // Rebuild chart
-          obChart = createChart(obContainerRef!, {
-            ...baseChartOptions(120),
-            width: obContainerRef!.clientWidth,
-            rightPriceScale: { borderColor: 'rgba(255, 255, 255, 0.06)', scaleMargins: { top: 0.1, bottom: 0.1 } },
+        // Rebuild chart (remove() called in loadKlines order book section to avoid double-destroy)
+        obChart = createChart(obContainerRef!, {
+          ...baseChartOptions(120),
+          width: obContainerRef!.clientWidth,
+          rightPriceScale: { borderColor: 'rgba(255, 255, 255, 0.06)', scaleMargins: { top: 0.1, bottom: 0.1 } },
+        });
+
+        if (ob.bids && ob.asks) {
+          const bids = ob.bids.map((b: string[]) => ({ price: parseFloat(b[0]), volume: parseFloat(b[1]) }));
+          const asks = ob.asks.map((a: string[]) => ({ price: parseFloat(a[0]), volume: parseFloat(a[1]) }));
+
+          const bidSeries = obChart.addHistogramSeries({
+            color: 'rgba(0, 217, 165, 0.5)',
+            priceFormat: { type: 'price', precision: 2 },
+            priceScaleId: 'bid',
           });
+          bidSeries.setData(bids.map((b: { price: number; volume: number }) => ({
+            time: b.price as Time,
+            value: b.volume,
+            color: 'rgba(0, 217, 165, 0.5)',
+          })));
 
-          if (ob.bids && ob.asks) {
-            const bids = ob.bids.map((b: any) => ({ price: parseFloat(b[0]), volume: parseFloat(b[1]) }));
-            const asks = ob.asks.map((a: any) => ({ price: parseFloat(a[0]), volume: parseFloat(a[1]) }));
+          const askSeries = obChart.addHistogramSeries({
+            color: 'rgba(255, 91, 121, 0.5)',
+            priceFormat: { type: 'price', precision: 2 },
+            priceScaleId: 'ask',
+          });
+          askSeries.setData(asks.map((a: { price: number; volume: number }) => ({
+            time: a.price as Time,
+            value: a.volume,
+            color: 'rgba(255, 91, 121, 0.5)',
+          })));
 
-            const bidSeries = obChart.addHistogramSeries({
-              color: 'rgba(0, 217, 165, 0.5)',
-              priceFormat: { type: 'price', precision: 2 },
-              priceScaleId: 'bid',
-            });
-            bidSeries.setData(bids.map(b => ({
-              time: b.price as Time,
-              value: b.volume,
-              color: 'rgba(0, 217, 165, 0.5)',
-            })));
-
-            const askSeries = obChart.addHistogramSeries({
-              color: 'rgba(255, 91, 121, 0.5)',
-              priceFormat: { type: 'price', precision: 2 },
-              priceScaleId: 'ask',
-            });
-            askSeries.setData(asks.map(a => ({
-              time: a.price as Time,
-              value: a.volume,
-              color: 'rgba(255, 91, 121, 0.5)',
-            })));
-
-            obChart.priceScale('bid').applyOptions({ scaleMargins: { top: 0.1, bottom: 0.1 } });
-            obChart.priceScale('ask').applyOptions({ scaleMargins: { top: 0.1, bottom: 0.1 } });
-
-            if (ob.top_anomalies) {
-              for (const ta of ob.top_anomalies) {
-                obChart.addVerticalLine({
-                  time: ta.price as Time,
-                  color: 'rgba(255, 91, 121, 0.9)',
-                  lineWidth: 1 as LineWidth,
-                  lineStyle: 0,
-                  axisLabelVisible: true,
-                });
-              }
-            }
-            obChart.timeScale().fitContent();
-          }
+          obChart.priceScale('bid').applyOptions({ scaleMargins: { top: 0.1, bottom: 0.1 } });
+          obChart.priceScale('ask').applyOptions({ scaleMargins: { top: 0.1, bottom: 0.1 } });
+          obChart.timeScale().fitContent();
         }
       }
     } catch (_e) { /* silently skip */ }
@@ -588,22 +563,16 @@ function App() {
         })));
       }
 
-      // Volume Anomaly markers (z-score > 2 on main chart)
+      // Volume Anomaly markers (z-score > 2 on main chart) — computed locally
       if (candlestickSeries) {
-        try {
-          const vaResp = await fetch(`/api/anomaly_volume?symbol=${selectedSymbol()}&interval=${interval()}&market=${market()}&years=5`);
-          if (vaResp.ok) {
-            const vaData = await vaResp.json();
-            const anomalies = vaData.anomalies || [];
-            candlestickSeries.setMarkers(anomalies.map((a: any) => ({
-              time: a.time as Time,
-              position: 'aboveBar',
-              color: 'rgba(0, 217, 165, 0.8)',
-              shape: 'arrowUp',
-              size: 1,
-            })));
-          }
-        } catch (_e) { /* silently skip */ }
+        const va = calcVolumeAnomalies(uniqueBars, 20, 2.0);
+        candlestickSeries.setMarkers(va.map((a) => ({
+          time: a.time as Time,
+          position: 'aboveBar',
+          color: 'rgba(0, 217, 165, 0.8)',
+          shape: 'arrowUp',
+          size: 1,
+        })));
       }
 
       // Order Book anomaly fetch + chart
@@ -617,13 +586,13 @@ function App() {
             const bids = ob.bids.map((b: string[]) => ({ price: parseFloat(b[0]), volume: parseFloat(b[1]) }));
             const asks = ob.asks.map((a: string[]) => ({ price: parseFloat(a[0]), volume: parseFloat(a[1]) }));
 
-            const maxVol = Math.max(...bids.map(b => b.volume), ...asks.map(a => a.volume), 1);
+            const maxVol = Math.max(...bids.map((b: { price: number; volume: number }) => b.volume), ...asks.map((a: { price: number; volume: number }) => a.volume), 1);
 
             obChart.addHistogramSeries({
               color: 'rgba(0, 217, 165, 0.5)',
               priceFormat: { type: 'price', precision: 2 },
               priceScaleId: 'bid',
-            }).setData(bids.map(b => ({
+            }).setData(bids.map((b: { price: number; volume: number }) => ({
               time: b.price as Time,
               value: b.volume,
               color: 'rgba(0, 217, 165, 0.5)',
@@ -633,25 +602,13 @@ function App() {
               color: 'rgba(255, 91, 121, 0.5)',
               priceFormat: { type: 'price', precision: 2 },
               priceScaleId: 'ask',
-            }).setData(asks.map(a => ({
+            }).setData(asks.map((a: { price: number; volume: number }) => ({
               time: a.price as Time,
               value: a.volume,
               color: 'rgba(255, 91, 121, 0.5)',
             })));
 
-            // Mark anomaly price levels with vertical lines
-            if (ob.top_anomalies) {
-              for (const ta of ob.top_anomalies) {
-                obChart.addVerticalLine({
-                  time: ta.price as Time,
-                  color: 'rgba(255, 91, 121, 0.9)',
-                  lineWidth: 1 as LineWidth,
-                  lineStyle: 0,
-                  axisLabelVisible: true,
-                });
-              }
-            }
-            obChart.timeScale().fitContent();
+            // Mark anomaly price levels with vertical lines — removed (LW-charts v4 has no addVerticalLine)
           }
         }
       } catch (_e) { /* silently skip */ }
@@ -721,7 +678,7 @@ function App() {
     const tf = interval();
     // Reset to default interval when switching to a market that doesn't support current tf
     const valid = availableIntervals().map(i => i.value);
-    if (!valid.includes(tf)) {
+    if (!valid.includes(tf as any)) {
       setTimeframe(valid[0] as '1d' | '1m' | '5m' | '15m' | '1h' | '4h' | '1w' | '1mo');
     } else if (symbols().length > 0) {
       loadKlines();
