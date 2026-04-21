@@ -6,6 +6,21 @@ import { ForeignPanel } from './ForeignPanel';
 interface MACDData { time: Time; macd: number; signal: number; histogram: number; }
 
 function calcMACD(data: KLine[]): MACDData[] {
+
+function calcVolumeAnomalies(data: KLine[], window: number = 20, zThreshold: number = 2.0): { time: number; volume: number; zScore: number; avgVolume: number }[] {
+  if (data.length < window) return [];
+  const volumes = data.map(k => k.volume);
+  const mean = volumes.reduce((a, b) => a + b, 0) / volumes.length;
+  const std = Math.sqrt(volumes.map(v => (v - mean) ** 2).reduce((a, b) => a + b, 0) / volumes.length);
+  const anomalies: { time: number; volume: number; zScore: number; avgVolume: number }[] = [];
+  for (let i = window; i < data.length; i++) {
+    const z = std > 0 ? (volumes[i] - mean) / std : 0;
+    if (z > zThreshold) {
+      anomalies.push({ time: data[i].time, volume: volumes[i], zScore: z, avgVolume: mean });
+    }
+  }
+  return anomalies;
+}
   const closes = data.map(d => d.close);
   const period = 14;
   if (closes.length < 27) return [];
