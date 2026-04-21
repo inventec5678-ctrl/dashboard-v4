@@ -139,7 +139,9 @@ function App() {
   // RSI threshold signals (exportable)
   const [rsiOverbought, setRsiOverbought] = createSignal(70);
   const [rsiOversold, setRsiOversold] = createSignal(30);
+  const [rsiZone, setRsiZone] = createSignal<'overbought' | 'oversold' | 'neutral'>('neutral');
   const [rsiLineColor, setRsiLineColor] = createSignal('#9B59B6');
+  const [backtestMarkers, setBacktestMarkers] = createSignal<any[]>([]);
   const [intervalApproximated, setIntervalApproximated] = createSignal(false);
   const [lastPrice, setLastPrice] = createSignal<number>(0);
   const [priceChange, setPriceChange] = createSignal<number>(0);
@@ -159,7 +161,7 @@ function App() {
   const [selectedSymbol, setSelectedSymbol] = createSignal('BTCUSDT');
 
   // Timeframe selector — dynamic per market
-  const [interval, setInterval] = createSignal<string>('1d');
+  const [interval, setTimeframe] = createSignal<string>('1d');
 
   const CRYPTO_INTERVALS = [
     { label: '1m', value: '1m' },
@@ -297,9 +299,9 @@ function App() {
       rightPriceScale: { borderColor: 'rgba(255, 255, 255, 0.06)', scaleMargins: { top: 0.2, bottom: 0.2 } },
     });
     rsiSeries = rsiChart.addLineSeries({ color: '#9B59B6', lineWidth: 1 as LineWidth, title: 'RSI14' });
-    // RSI reference lines (dynamic thresholds)
-    rsiOverboughtLine = rsiChart.addLineSeries({ color: 'rgba(255,0,0,0.3)', lineWidth: 1 as LineWidth, lineStyle: 2, title: 'Overbought' });
-    rsiOversoldLine = rsiChart.addLineSeries({ color: 'rgba(0,255,0,0.3)', lineWidth: 1 as LineWidth, lineStyle: 2, title: 'Oversold' });
+    // RSI colored zone overlays (red=overbought, green=oversold) — overlay on main purple
+    rsiOverboughtLine = rsiChart.addLineSeries({ color: 'rgba(255,0,0,0.4)', lineWidth: 2 as LineWidth, title: 'OB' });
+    rsiOversoldLine = rsiChart.addLineSeries({ color: 'rgba(0,255,0,0.4)', lineWidth: 2 as LineWidth, title: 'OS' });
 
     // MACD chart
     if (macdContainerRef) {
@@ -525,7 +527,7 @@ function App() {
       if (barsToShow && uniqueData.length > barsToShow) {
         const lastTime = uniqueData[uniqueData.length - 1].time as number;
         const firstTime = uniqueData[uniqueData.length - barsToShow].time as number;
-        chart?.timeScale().setVisibleRange({ from: firstTime, to: lastTime + 86400 * 31 });
+        chart?.timeScale().setVisibleRange({ from: firstTime as Time, to: (lastTime + 86400 * 31) as Time });
       } else {
         chart?.timeScale().fitContent();
       }
@@ -541,18 +543,22 @@ function App() {
         volumeChart?.timeScale().scrollToPosition(chart!.timeScale().scrollPosition(), true);
       }
 
-      // SMA + RSI + MACD (use same uniqueBars dedup logic)
+      // RSI — colored segments: green (oversold) / purple (middle) / red (overbought)
       const rsiData = calcRSI(uniqueBars, 14);
-      rsiSeries?.setData(rsiData);
-      // Dynamic RSI threshold reference lines
       const rsiOB = rsiOverbought();
       const rsiOS = rsiOversold();
-      if (rsiData.length > 0 && rsiOverboughtLine && rsiOversoldLine) {
+      if (rsiData.length > 0) {
+        rsiSeries?.setData(rsiData);
+        // Colored zone overlays: only show red/green for overbought/oversold portions
+        const obData = rsiData.filter(d => d.value >= rsiOB).map(d => ({ time: d.time, value: d.value }));
+        const osData = rsiData.filter(d => d.value <= rsiOS).map(d => ({ time: d.time, value: d.value }));
+        rsiOverboughtLine?.setData(obData);
+        rsiOversoldLine?.setData(osData);
+        // Reference lines at threshold
         const times = rsiData.map(d => d.time);
-        const obData = times.map(t => ({ time: t, value: rsiOB }));
-        const osData = times.map(t => ({ time: t, value: rsiOS }));
-        rsiOverboughtLine.setData(obData);
-        rsiOversoldLine.setData(osData);
+        const lastRsi = rsiData[rsiData.length - 1].value;
+        setRsiZone(lastRsi > rsiOB ? 'overbought' : lastRsi < rsiOS ? 'oversold' : 'neutral');
+        setRsiLineColor(lastRsi > rsiOB ? '#FF5B79' : lastRsi < rsiOS ? '#00D9A5' : '#9B59B6');
       }
 
       // MACD
@@ -701,7 +707,7 @@ function App() {
     // Reset to default interval when switching to a market that doesn't support current tf
     const valid = availableIntervals().map(i => i.value);
     if (!valid.includes(tf)) {
-      setInterval(valid[0]);
+      setTimeframe(valid[0] as '1d' | '1m' | '5m' | '15m' | '1h' | '4h' | '1w' | '1mo');
     } else if (symbols().length > 0) {
       loadKlines();
     }
@@ -730,7 +736,7 @@ function App() {
             <button
               class={`interval-btn ${interval() === int.value ? 'active' : ''}`}
               onClick={() => {
-                setInterval(int.value);
+                setTimeframe(int.value);
                 loadKlines();
               }}
             >
@@ -786,6 +792,15 @@ function App() {
             <span class="topbar-stat-label">Volume</span>
             <span class="topbar-stat-value mono text-blue">
               {formatVolume(volume())}
+            </span>
+          </div>
+          <div class="topbar-stat">
+            <span class="topbar-stat-label">RSI Zone</span>
+            <span
+              class="topbar-stat-value mono"
+              style={{ color: rsiZone() === 'overbought' ? '#FF5B79' : rsiZone() === 'oversold' ? '#00D9A5' : '#9B59B6' }}
+            >
+              {rsiZone() === 'overbought' ? 'Overbought ↑' : rsiZone() === 'oversold' ? 'Oversold ↓' : 'Neutral'}
             </span>
           </div>
         </div>
@@ -988,7 +1003,11 @@ function App() {
         interval={interval}
         market={market}
         chartRef={() => chart}
-        getAllMarkers={() => []}
+        csSeriesRef={() => candlestickSeries}
+        onMarkersChange={(markers: any[]) => {
+          setBacktestMarkers(markers);
+          candlestickSeries?.setMarkers(markers);
+        }}
       />
 
       {/* Foreign Investor Panel — TWSE only */}

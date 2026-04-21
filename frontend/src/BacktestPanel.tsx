@@ -34,14 +34,16 @@ interface BacktestResult {
   equity_curve: EquityPoint[];
   markers: any[];
   metrics: Metrics;
+  error?: string;
 }
 
 interface BacktestPanelProps {
   selectedSymbol: () => string;
   interval: () => string;
   market: () => string;
-  chartRef: () => IChartApi | null;
-  getAllMarkers: () => any[];
+  chartRef: () => any;
+  csSeriesRef: () => any;
+  onMarkersChange: (markers: any[]) => void;
 }
 
 const STRATEGIES = [
@@ -149,9 +151,9 @@ function BacktestPanel(props: BacktestPanelProps) {
 
     try {
       const body = new URLSearchParams({
-        symbol: props.selectedSymbol(),
-        interval: props.interval(),
-        market: props.market(),
+        symbol: props.selectedSymbolVal(),
+        interval: props.intervalVal(),
+        market: props.marketVal(),
         strategy: strategy(),
         params: JSON.stringify(params()),
       });
