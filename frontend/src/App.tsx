@@ -1,6 +1,7 @@
 import { createSignal, createEffect, onMount, onCleanup, Show, For } from 'solid-js';
 import { createChart, ColorType, CrosshairMode, IChartApi, ISeriesApi, LineWidth, Time, VerticalLine } from 'lightweight-charts';
 import BacktestPanel from './BacktestPanel';
+import { ForeignPanel } from './ForeignPanel';
 
 interface MACDData { time: Time; macd: number; signal: number; histogram: number; }
 
@@ -963,6 +964,11 @@ function App() {
         chartRef={() => chart}
         getAllMarkers={() => []}
       />
+
+      {/* Foreign Investor Panel — TWSE only */}
+      {market() === 'TWSE' && (
+        <ForeignPanel symbol={selectedSymbol} />
+      )}
     </div>
   );
 }

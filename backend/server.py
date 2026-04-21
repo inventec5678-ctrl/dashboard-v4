@@ -621,6 +621,83 @@ async def get_orderbook_anomalies(symbol: str = "BTCUSDT"):
 
 
 # ========================================
+# 外國人/僑外人 法人買賣資料（FinMind API）
+# ========================================
+
+def fetch_foreign_investor_data(stock_id: str, days: int = 30) -> list:
+    """
+    Fetch foreign investor (外國人/僑外人) net buying data from FinMind API.
+    Returns: [{date, buy, sell, net}] for the stock, sorted by date desc.
+    """
+    import requests
+    end_date = datetime.now().strftime('%Y-%m-%d')
+    start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+
+    url = 'https://api.finmindtrade.com/api/v4/data'
+    params = {
+        'dataset': 'TaiwanStockInstitutionalInvestorsBuySell',
+        'data_id': stock_id,
+        'start_date': start_date,
+        'end_date': end_date,
+    }
+    resp = requests.get(url, params=params, timeout=15)
+    data = resp.json()
+
+    # Filter only Foreign_Investor rows
+    foreign_rows = [r for r in data.get('data', []) if r['name'] == 'Foreign_Investor']
+    result = []
+    for r in foreign_rows:
+        result.append({
+            'date': r['date'],
+            'buy': r['buy'],
+            'sell': r['sell'],
+            'net': r['buy'] - r['sell'],  # positive = net buy
+        })
+    return sorted(result, key=lambda x: x['date'])  # oldest first
+
+
+@app.get("/api/foreign_investor")
+async def get_foreign_investor(
+    symbol: str = "2330",
+    days: int = 30,
+    streak_threshold: int = 5,  # minimum consecutive buy days to trigger signal
+):
+    """
+    Returns: {
+        "stock_id": "2330",
+        "streak_days": 5,        # current consecutive net-buy days
+        "streak_net_total": 123456789,  # total net bought during streak
+        "signaled": true,        # true if streak >= streak_threshold
+        "history": [
+            {"date": "2026-04-07", "buy": 13401937, "sell": 7521487, "net": 5880450, "net_positive": true},
+            ...
+        ]
+    }
+    """
+    import asyncio
+    loop = asyncio.get_event_loop()
+    history = await loop.run_in_executor(None, fetch_foreign_investor_data, symbol, days)
+
+    # Calculate consecutive buy streak (net > 0)
+    streak = 0
+    streak_net_total = 0
+    for h in reversed(history):  # start from most recent
+        if h['net'] > 0:
+            streak += 1
+            streak_net_total += h['net']
+        else:
+            break
+
+    return {
+        "stock_id": symbol,
+        "streak_days": streak,
+        "streak_net_total": streak_net_total,
+        "signaled": streak >= streak_threshold,
+        "history": history,  # all history for display
+    }
+
+
+# ========================================
 # WebSocket — Real-time Price Feed
 # ========================================
 
